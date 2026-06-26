@@ -122,9 +122,9 @@ def palette_table(palette: Palette) -> list[dict]:
 def main() -> None:
     st.title("🎨 カラーパレット抽出アプリ")
     st.caption(
-        "画像の色を k-medoids で減色し、基本色名（赤・橙・黄…）に近似・集約して"
-        "アクセントカラーが抽出できる最小クラスタ数を二分探索で探します。"
-        "鮮やかさは代表色の彩度重視度で調整できます。"
+        "画像の色を K-means で減色し、基本色名（赤・橙・黄…）に近似・集約して"
+        "パレットを作ります。アクセントカラーが抽出できる最小クラスタ数を"
+        "二分探索で探します。"
     )
 
     # ---- サイドバー：パラメータ ----
@@ -138,15 +138,6 @@ def main() -> None:
             value=True,
             help="ON: 距離を CIELAB(ΔE) で計算し知覚的に分割（赤と背景が分かれやすい）。"
             "OFF: RGB 距離。",
-        )
-        vividness = st.slider(
-            "鮮やかさ（彩度重視度）",
-            min_value=0.0,
-            max_value=1.0,
-            value=0.6,
-            step=0.05,
-            help="表示する代表色を彩度寄りの実画素にする強さ。0=medoid（中心色）、"
-            "1=最も鮮やか。無彩色（白・灰・黒や淡い背景）クラスタには影響しません。",
         )
 
         st.subheader("アクセントカラーの範囲")
@@ -191,22 +182,6 @@ def main() -> None:
             help="探索する最小のクラスタ数。",
         )
 
-        st.subheader("表示用のクラスタ数")
-        match_min_k = st.toggle(
-            "最小クラスタ数 (min_k) に合わせる",
-            value=False,
-            help="ON: パレット・減色画像を min_k で表示。"
-            "OFF: 下で指定した k で表示（鮮やかな色を分離して拾いやすい）。",
-        )
-        display_k_input = st.number_input(
-            "パレット・減色画像のクラスタ数 (k)",
-            min_value=2,
-            max_value=64,
-            value=DEFAULT_K_MAX,
-            disabled=match_min_k,
-            help="アクセント探索は min_k のまま、表示だけこの k で行います。",
-        )
-
         st.subheader("詳細設定")
         max_pixels = st.select_slider(
             "サンプリング上限ピクセル数",
@@ -246,14 +221,11 @@ def main() -> None:
             lab_space=lab_space,
         )
 
-    # アクセント判定（集約ベース）に使う色名集合を決める
+    # 表示する k と、アクセント判定（集約ベース）に使う色名集合を決める
     no_accent = result.min_k is None
+    disp_k = result.base_palette.k if no_accent else result.min_k
     agg_palette = result.base_palette if no_accent else result.final_palette
     accent_names = {c.name for c in agg_palette.accent_colors}
-
-    # 表示用の k（min_k に合わせる / 別途指定）
-    min_k_value = result.base_palette.k if no_accent else result.min_k
-    disp_k = min_k_value if match_min_k else int(display_k_input)
 
     with st.spinner("減色画像を生成中..."):
         clustered = cluster_and_quantize(
@@ -263,7 +235,6 @@ def main() -> None:
             seed=int(seed),
             max_fit_pixels=int(max_pixels),
             lab_space=lab_space,
-            vividness=float(vividness),
         )
 
     # ---- 入力画像 と クラスタリング後の画像（上に縦並び） ----
@@ -287,11 +258,6 @@ def main() -> None:
 
     final = clustered.palette
     st.subheader(f"🎨 カラーパレット（k = {disp_k}・{len(final.colors)}色）")
-    if not no_accent and disp_k != min_k_value:
-        st.caption(
-            f"※ アクセント探索の結果は min_k = {min_k_value} ですが、"
-            f"鮮やかな色を拾うため表示は k = {disp_k} にしています。"
-        )
     render_palette(final)
 
     accents = agg_palette.accent_colors
