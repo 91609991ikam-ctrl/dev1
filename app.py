@@ -27,6 +27,7 @@ from color_palette import (
     DEFAULT_K_MIN,
     DEFAULT_SEED,
     Palette,
+    cluster_and_quantize,
     find_min_accent_k,
     load_pixels,
 )
@@ -196,11 +197,6 @@ def main() -> None:
 
     image = Image.open(io.BytesIO(uploaded.read()))
 
-    # ---- 入力画像（上） ----
-    st.subheader("入力画像")
-    img_col, _ = st.columns([2, 1])
-    img_col.image(image, use_container_width=True)
-
     # ---- 解析 ----
     with st.spinner("クラスタリング中..."):
         pixels = load_pixels(image, max_pixels=int(max_pixels))
@@ -215,29 +211,48 @@ def main() -> None:
             exclude_achromatic=exclude_achromatic,
         )
 
+    # 表示する k と、アクセント判定（集約ベース）に使う色名集合を決める
+    no_accent = result.min_k is None
+    disp_k = result.base_palette.k if no_accent else result.min_k
+    agg_palette = result.base_palette if no_accent else result.final_palette
+    accent_names = {c.name for c in agg_palette.accent_colors}
+
+    with st.spinner("減色画像を生成中..."):
+        clustered = cluster_and_quantize(
+            image,
+            disp_k,
+            accent_names=accent_names,
+            seed=int(seed),
+            max_fit_pixels=int(max_pixels),
+        )
+
+    # ---- 入力画像 と クラスタリング後の画像（上に縦並び） ----
+    img_col, _ = st.columns([2, 1])
+    img_col.subheader("入力画像")
+    img_col.image(image, use_container_width=True)
+    img_col.subheader(f"クラスタリング後の画像（k = {disp_k}）")
+    img_col.image(clustered.image, use_container_width=True)
+
     # ---- パレット（画像の下） ----
-    if result.min_k is None:
+    if no_accent:
         st.warning(
             f"指定した範囲（{accent_low*100:.1f}〜{accent_high*100:.1f}%）の"
             f"アクセントカラーは k={result.base_palette.k} でも見つかりませんでした。"
             "アクセント範囲を広げて再試行してみてください。"
         )
-        st.subheader(f"カラーパレット（k = {result.base_palette.k}）")
-        render_palette(result.base_palette)
-        return
+    else:
+        st.success(
+            f"✅ アクセントカラーが抽出できる最小クラスタ数は **k = {result.min_k}** です。"
+        )
 
-    st.success(
-        f"✅ アクセントカラーが抽出できる最小クラスタ数は **k = {result.min_k}** です。"
-    )
-
-    final = result.final_palette
-    st.subheader(f"🎨 カラーパレット（k = {final.k}）")
+    final = clustered.palette
+    st.subheader(f"🎨 カラーパレット（k = {disp_k}・{len(final.colors)}色）")
     render_palette(final)
 
-    accents = final.accent_colors
+    accents = agg_palette.accent_colors
     if accents:
         st.markdown(
-            "**アクセントカラー:** "
+            "**アクセントカラー（集約ベース）:** "
             + " / ".join(
                 f"{c.name + ' ' if c.name else ''}`{c.hex}` ({c.percent:.1f}%)"
                 for c in accents

@@ -88,6 +88,14 @@ class SearchResult:
     palettes: dict[int, Palette] = field(default_factory=dict)  # k -> Palette のキャッシュ
 
 
+@dataclass
+class ClusteredImage:
+    """ある k でクラスタリングした「量子化画像」と「生の k 色パレット」."""
+
+    image: Image.Image  # 各画素を所属クラスタの中心色に置換した減色画像
+    palette: Palette  # 集約せず各クラスタ中心をそのまま 1 色としたパレット
+
+
 def load_pixels(image: Image.Image, max_pixels: int = 100_000) -> np.ndarray:
     """PIL 画像を (N, 3) の RGB ピクセル配列に変換する.
 
@@ -189,6 +197,67 @@ def make_palette(
     # 割合の降順に並べ替え（多い順）
     entries.sort(key=lambda c: c.proportion, reverse=True)
     return Palette(k=k, colors=entries)
+
+
+def cluster_and_quantize(
+    image: Image.Image,
+    k: int,
+    accent_names: set[str] | None = None,
+    seed: int = DEFAULT_SEED,
+    max_fit_pixels: int = 100_000,
+    max_display_pixels: int = 480_000,
+) -> ClusteredImage:
+    """k クラスタでクラスタリングし、「量子化画像」と「生の k 色パレット」を返す.
+
+    - 量子化画像: 各画素を所属クラスタの中心色に置き換えた減色画像。
+    - パレット: 集約（基本色名での合算）はせず、各クラスタ中心をそのまま 1 色とする。
+      accent_names に含まれる基本色名に対応するクラスタを「アクセント」として印付けする
+      （アクセント判定自体は集約ベースの探索結果を渡して使う）。
+    """
+    accent_names = accent_names or set()
+
+    fit_pixels = load_pixels(image, max_pixels=max_fit_pixels)
+    k = max(1, min(k, len(fit_pixels)))
+
+    km = KMeans(n_clusters=k, random_state=seed, n_init=10)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=ConvergenceWarning)
+        km.fit(fit_pixels)
+    centers = km.cluster_centers_
+
+    counts = np.bincount(km.labels_, minlength=k)
+    total = counts.sum()
+    proportions = counts / total if total else np.zeros(k)
+
+    # --- 量子化画像（表示用に縮小してから各画素を最近傍中心の色へ置換）---
+    disp = image.convert("RGB")
+    w, h = disp.size
+    n = w * h
+    if max_display_pixels and n > max_display_pixels:
+        scale = (max_display_pixels / n) ** 0.5
+        disp = disp.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.BILINEAR)
+    disp_arr = np.asarray(disp, dtype=np.float64).reshape(-1, 3)
+    disp_labels = km.predict(disp_arr)
+    quant = centers[disp_labels].reshape(disp.height, disp.width, 3)
+    quant_img = Image.fromarray(np.clip(np.round(quant), 0, 255).astype(np.uint8))
+
+    # --- 生の k 色パレット（集約しない）---
+    cluster_basic = nearest_basic_index(centers)
+    entries: list[ColorEntry] = []
+    for i in range(k):
+        if counts[i] == 0:
+            continue
+        name = BASIC_NAMES_JA[cluster_basic[i]]
+        entries.append(
+            ColorEntry(
+                rgb=_to_rgb_tuple(centers[i]),
+                proportion=float(proportions[i]),
+                is_accent=name in accent_names,
+                name=name,
+            )
+        )
+    entries.sort(key=lambda c: c.proportion, reverse=True)
+    return ClusteredImage(image=quant_img, palette=Palette(k=k, colors=entries))
 
 
 def find_min_accent_k(
