@@ -26,6 +26,8 @@ from color_palette import (
     DEFAULT_K_MAX,
     DEFAULT_K_MIN,
     DEFAULT_SEED,
+    METHOD_KMEANS,
+    METHOD_KMEDOIDS,
     Palette,
     cluster_and_quantize,
     find_min_accent_k,
@@ -131,6 +133,16 @@ def main() -> None:
     with st.sidebar:
         st.header("⚙️ パラメータ")
 
+        st.subheader("クラスタリング手法")
+        method_label = st.radio(
+            "手法",
+            options=["k-medoids（実色・鮮やか）", "k-means（平均）"],
+            index=0,
+            help="k-medoids は代表色に実在画素を使うため、平均による色のくすみを"
+            "避けられます。k-means は各クラスタを平均色で代表します。",
+        )
+        method = METHOD_KMEDOIDS if method_label.startswith("k-medoids") else METHOD_KMEANS
+
         st.subheader("アクセントカラーの範囲")
         accent_range = st.slider(
             "割合の下限〜上限 (%)",
@@ -209,6 +221,7 @@ def main() -> None:
             seed=int(seed),
             aggregate=aggregate,
             exclude_achromatic=exclude_achromatic,
+            method=method,
         )
 
     # 表示する k と、アクセント判定（集約ベース）に使う色名集合を決める
@@ -224,6 +237,7 @@ def main() -> None:
             accent_names=accent_names,
             seed=int(seed),
             max_fit_pixels=int(max_pixels),
+            method=method,
         )
 
     # ---- 入力画像 と クラスタリング後の画像（上に縦並び） ----
