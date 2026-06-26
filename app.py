@@ -143,6 +143,22 @@ def main() -> None:
         )
         method = METHOD_KMEDOIDS if method_label.startswith("k-medoids") else METHOD_KMEANS
 
+        is_medoids = method == METHOD_KMEDOIDS
+        lab_space = st.toggle(
+            "知覚的距離 CIELAB で分割",
+            value=True,
+            disabled=not is_medoids,
+            help="ON: 距離を CIELAB(ΔE) で計算し知覚的に分割（赤と背景が分かれやすい）。"
+            "OFF: RGB 距離。k-medoids 選択時のみ有効。",
+        )
+        saturation_aware = st.toggle(
+            "彩度を考慮した代表色",
+            value=True,
+            disabled=not is_medoids,
+            help="ON: クラスタ中心付近の実画素のうち最も鮮やかな色を代表色にする"
+            "（くすみ防止）。k-medoids 選択時のみ有効。",
+        )
+
         st.subheader("アクセントカラーの範囲")
         accent_range = st.slider(
             "割合の下限〜上限 (%)",
@@ -222,6 +238,8 @@ def main() -> None:
             aggregate=aggregate,
             exclude_achromatic=exclude_achromatic,
             method=method,
+            lab_space=lab_space,
+            saturation_aware=saturation_aware,
         )
 
     # 表示する k と、アクセント判定（集約ベース）に使う色名集合を決める
@@ -238,6 +256,8 @@ def main() -> None:
             seed=int(seed),
             max_fit_pixels=int(max_pixels),
             method=method,
+            lab_space=lab_space,
+            saturation_aware=saturation_aware,
         )
 
     # ---- 入力画像 と クラスタリング後の画像（上に縦並び） ----

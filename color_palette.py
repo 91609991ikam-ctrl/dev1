@@ -38,10 +38,24 @@ METHOD_KMEDOIDS = "kmedoids"
 DEFAULT_METHOD = METHOD_KMEDOIDS
 
 
-def _build_clusterer(method: str, k: int, seed: int):
-    """手法名に応じてクラスタリング器を返す（sklearn 互換 API）."""
+def _build_clusterer(
+    method: str,
+    k: int,
+    seed: int,
+    lab_space: bool = True,
+    saturation_aware: bool = True,
+):
+    """手法名に応じてクラスタリング器を返す（sklearn 互換 API）.
+
+    lab_space / saturation_aware は k-medoids のみで有効（k-means では無視）。
+    """
     if method == METHOD_KMEDOIDS:
-        return KMedoidsLite(n_clusters=k, random_state=seed)
+        return KMedoidsLite(
+            n_clusters=k,
+            random_state=seed,
+            lab_space=lab_space,
+            saturation_aware=saturation_aware,
+        )
     return KMeans(n_clusters=k, random_state=seed, n_init=10)
 
 
@@ -143,6 +157,8 @@ def make_palette(
     aggregate: bool = True,
     exclude_achromatic: bool = True,
     method: str = DEFAULT_METHOD,
+    lab_space: bool = True,
+    saturation_aware: bool = True,
 ) -> Palette:
     """ピクセル配列を k クラスタにクラスタリングしてパレットを作る.
 
@@ -160,7 +176,7 @@ def make_palette(
     """
     k = max(1, min(k, len(pixels)))
 
-    km = _build_clusterer(method, k, seed)
+    km = _build_clusterer(method, k, seed, lab_space, saturation_aware)
     with warnings.catch_warnings():
         # べた塗り画像など、実際の色数 < k のときの警告は想定内なので抑制
         warnings.simplefilter("ignore", category=ConvergenceWarning)
@@ -221,6 +237,8 @@ def cluster_and_quantize(
     max_fit_pixels: int = 100_000,
     max_display_pixels: int = 480_000,
     method: str = DEFAULT_METHOD,
+    lab_space: bool = True,
+    saturation_aware: bool = True,
 ) -> ClusteredImage:
     """k クラスタでクラスタリングし、「量子化画像」と「生の k 色パレット」を返す.
 
@@ -234,7 +252,7 @@ def cluster_and_quantize(
     fit_pixels = load_pixels(image, max_pixels=max_fit_pixels)
     k = max(1, min(k, len(fit_pixels)))
 
-    km = _build_clusterer(method, k, seed)
+    km = _build_clusterer(method, k, seed, lab_space, saturation_aware)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=ConvergenceWarning)
         km.fit(fit_pixels)
@@ -285,6 +303,8 @@ def find_min_accent_k(
     aggregate: bool = True,
     exclude_achromatic: bool = True,
     method: str = DEFAULT_METHOD,
+    lab_space: bool = True,
+    saturation_aware: bool = True,
 ) -> SearchResult:
     """アクセントカラーが抽出できる最小クラスタ数を二分探索で探す.
 
@@ -304,7 +324,7 @@ def find_min_accent_k(
         if k not in palettes:
             palettes[k] = make_palette(
                 pixels, k, accent_low, accent_high, seed, aggregate,
-                exclude_achromatic, method,
+                exclude_achromatic, method, lab_space, saturation_aware,
             )
         has = palettes[k].has_accent
         trace.append((k, has))
@@ -313,7 +333,7 @@ def find_min_accent_k(
     # 初期クラスタ数 k_max でアクセントカラーを定義・確認
     base_palette = make_palette(
         pixels, k_max, accent_low, accent_high, seed, aggregate,
-        exclude_achromatic, method,
+        exclude_achromatic, method, lab_space, saturation_aware,
     )
     palettes[k_max] = base_palette
 
