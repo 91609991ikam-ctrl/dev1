@@ -51,9 +51,12 @@ def palette_html(palette: Palette) -> str:
     if not palette.colors:
         return ""
 
+    # 描画は割合の小さい順（パレット内部は大きい順で保持）
+    colors = list(reversed(palette.colors))
+
     # --- 1) 横向き積み上げ棒グラフ ---
     segments = ""
-    for c in palette.colors:
+    for c in colors:
         width = c.proportion * 100.0
         fg = _text_color_for(c.rgb)
         # 幅が十分あるセグメントにだけ割合ラベルを載せる
@@ -71,7 +74,7 @@ def palette_html(palette: Palette) -> str:
 
     # --- 2) 丸の凡例リスト ---
     rows = ""
-    for c in palette.colors:
+    for c in colors:
         name = f"{c.name}　" if c.name else ""
         star = (
             '<span style="color:#FF3B30;font-weight:bold;">　⭐ アクセント</span>'
@@ -146,6 +149,13 @@ def main() -> None:
             "OFF: 各クラスタをそのまま色として扱う（従来動作）。",
         )
 
+        exclude_achromatic = st.toggle(
+            "無彩色（白・灰・黒）はアクセントにしない",
+            value=True,
+            help="ON: 白・灰・黒はアクセントカラーの対象外にします。"
+            "OFF: 無彩色もアクセントになりえます。",
+        )
+
         st.subheader("クラスタ数の探索範囲")
         k_max = st.number_input(
             "初期クラスタ数 (k_max)",
@@ -202,6 +212,7 @@ def main() -> None:
             accent_high=accent_high,
             seed=int(seed),
             aggregate=aggregate,
+            exclude_achromatic=exclude_achromatic,
         )
 
     # ---- パレット（画像の下） ----
@@ -247,9 +258,6 @@ def main() -> None:
             "k_max でアクセントを定義し、P(k)=「アクセントが出るか」を満たす"
             "最小の k を二分探索しています。"
         )
-
-    with st.expander(f"🧩 初期クラスタ数 k={result.base_palette.k} のパレット"):
-        render_palette(result.base_palette)
 
 
 if __name__ == "__main__":

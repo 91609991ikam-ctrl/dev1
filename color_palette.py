@@ -24,7 +24,12 @@ from PIL import Image
 from sklearn.cluster import KMeans
 from sklearn.exceptions import ConvergenceWarning
 
-from color_naming import BASIC_NAMES_JA, nearest_basic_index, nearest_real_pixel
+from color_naming import (
+    ACHROMATIC_NAMES_JA,
+    BASIC_NAMES_JA,
+    nearest_basic_index,
+    nearest_real_pixel,
+)
 
 
 # クラスタリングの再現性を保つための既定シード
@@ -115,6 +120,7 @@ def make_palette(
     accent_high: float = DEFAULT_ACCENT_HIGH,
     seed: int = DEFAULT_SEED,
     aggregate: bool = True,
+    exclude_achromatic: bool = True,
 ) -> Palette:
     """ピクセル配列を k クラスタにクラスタリングしてパレットを作る.
 
@@ -144,10 +150,13 @@ def make_palette(
     proportions = counts / total if total else np.zeros(k)
 
     def _entry(prop: float, rgb: tuple[int, int, int], name: str = "") -> ColorEntry:
+        in_range = accent_low <= prop <= accent_high
+        # 無彩色（白・灰・黒）はアクセントから除外（exclude_achromatic=True のとき）
+        is_achromatic = exclude_achromatic and name in ACHROMATIC_NAMES_JA
         return ColorEntry(
             rgb=rgb,
             proportion=prop,
-            is_accent=accent_low <= prop <= accent_high,
+            is_accent=in_range and not is_achromatic,
             name=name,
         )
 
@@ -190,6 +199,7 @@ def find_min_accent_k(
     accent_high: float = DEFAULT_ACCENT_HIGH,
     seed: int = DEFAULT_SEED,
     aggregate: bool = True,
+    exclude_achromatic: bool = True,
 ) -> SearchResult:
     """アクセントカラーが抽出できる最小クラスタ数を二分探索で探す.
 
@@ -207,13 +217,17 @@ def find_min_accent_k(
 
     def predicate(k: int) -> bool:
         if k not in palettes:
-            palettes[k] = make_palette(pixels, k, accent_low, accent_high, seed, aggregate)
+            palettes[k] = make_palette(
+                pixels, k, accent_low, accent_high, seed, aggregate, exclude_achromatic
+            )
         has = palettes[k].has_accent
         trace.append((k, has))
         return has
 
     # 初期クラスタ数 k_max でアクセントカラーを定義・確認
-    base_palette = make_palette(pixels, k_max, accent_low, accent_high, seed, aggregate)
+    base_palette = make_palette(
+        pixels, k_max, accent_low, accent_high, seed, aggregate, exclude_achromatic
+    )
     palettes[k_max] = base_palette
 
     # k_max でもアクセントが無ければ探索不能

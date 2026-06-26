@@ -32,6 +32,9 @@ BASIC_NAMES_JA = [c[0] for c in BASIC_COLORS]
 BASIC_NAMES_EN = [c[1] for c in BASIC_COLORS]
 _ANCHOR_RGB = np.array([c[2] for c in BASIC_COLORS], dtype=np.float64)
 
+# 無彩色（白・灰・黒）の色名。アクセントカラーから除外する判定に使う。
+ACHROMATIC_NAMES_JA = {"白", "灰", "黒"}
+
 
 def srgb_to_lab(rgb: np.ndarray) -> np.ndarray:
     """sRGB(0-255) を CIELAB(D65) に変換する.
