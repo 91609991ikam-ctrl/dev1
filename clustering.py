@@ -21,8 +21,19 @@ import numpy as np
 from color_naming import srgb_to_lab
 
 
+def _lab_chroma(lab: np.ndarray) -> np.ndarray:
+    """Lab 配列 (...,3) の彩度 C=√(a²+b²) を返す."""
+    return np.sqrt(lab[..., 1] ** 2 + lab[..., 2] ** 2)
+
+
 class KMedoidsLite:
-    """部分標本＋交互最適化（PAM 風）による k-medoids."""
+    """部分標本＋交互最適化（PAM 風）による k-medoids.
+
+    vividness>0 のとき、代表色を「彩度重視」で選ぶ（鮮やかさ維持）。ただし
+    medoid の彩度が neutral_chroma 未満の無彩色クラスタ（白・灰・黒や淡い背景）は
+    対象外とし、背景が色づくのを防ぐ。割当（predict）は常に medoid 基準で行い、
+    代表色（cluster_centers_）だけを彩度寄りの実画素にする。
+    """
 
     def __init__(
         self,
@@ -31,12 +42,16 @@ class KMedoidsLite:
         sample_size: int = 2500,
         max_iter: int = 50,
         lab_space: bool = True,
+        vividness: float = 0.0,
+        neutral_chroma: float = 18.0,
     ):
         self.n_clusters = n_clusters
         self.random_state = random_state
         self.sample_size = sample_size
         self.max_iter = max_iter
         self.lab_space = lab_space
+        self.vividness = vividness
+        self.neutral_chroma = neutral_chroma
         self.cluster_centers_: np.ndarray | None = None
         self.labels_: np.ndarray | None = None
         self._medoid_feat: np.ndarray | None = None  # predict 用の medoid 特徴量
@@ -65,6 +80,37 @@ class KMedoidsLite:
             chosen.append(nxt)
             closest = np.minimum(closest, dist[nxt])
         return np.array(chosen, dtype=int)
+
+    def _representative(
+        self,
+        members: np.ndarray,
+        sample_feat: np.ndarray,
+        sample_rgb: np.ndarray,
+        medoid: int,
+    ) -> int:
+        """クラスタの代表となる実画素のインデックスを返す（彩度重視・改良版）.
+
+        - vividness<=0 または単一要素なら medoid をそのまま返す。
+        - medoid が無彩色（彩度 < neutral_chroma）のクラスタは背景を変えないよう medoid。
+        - それ以外は score = vividness×彩度 − (1−vividness)×中心からの距離（各 0..1 正規化）
+          を最大化する実画素を代表にする（vividness=1 で最も鮮やか、0 で medoid）。
+        """
+        if self.vividness <= 0 or len(members) == 1:
+            return int(medoid)
+
+        medoid_chroma = float(_lab_chroma(srgb_to_lab(sample_rgb[medoid][None, :]))[0])
+        if medoid_chroma < self.neutral_chroma:
+            return int(medoid)
+
+        chroma = _lab_chroma(srgb_to_lab(sample_rgb[members]))
+        dist = np.linalg.norm(sample_feat[members] - sample_feat[medoid], axis=1)
+
+        def _norm(x: np.ndarray) -> np.ndarray:
+            span = x.max() - x.min()
+            return (x - x.min()) / span if span > 0 else np.zeros_like(x)
+
+        score = self.vividness * _norm(chroma) - (1.0 - self.vividness) * _norm(dist)
+        return int(members[int(np.argmax(score))])
 
     def fit(self, X: np.ndarray) -> "KMedoidsLite":
         X = np.asarray(X, dtype=np.float64)
@@ -95,9 +141,16 @@ class KMedoidsLite:
             medoids = new_medoids
             labels = np.argmin(dist[:, medoids], axis=1)
 
-        # 代表色は medoid（実在画素）の RGB
+        # 割当（predict）は medoid 基準。代表色は彩度重視で選んだ実画素。
         self._medoid_feat = sample_feat[medoids].copy()
-        self.cluster_centers_ = sample_rgb[medoids].copy()
+        labels = np.argmin(dist[:, medoids], axis=1)
+        reps = np.array(
+            [
+                self._representative(np.where(labels == c)[0], sample_feat, sample_rgb, medoids[c])
+                for c in range(k)
+            ]
+        )
+        self.cluster_centers_ = sample_rgb[reps].copy()
         self.labels_ = self.predict(X)
         return self
 

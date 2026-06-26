@@ -203,6 +203,7 @@ def cluster_and_quantize(
     max_fit_pixels: int = 100_000,
     max_display_pixels: int = 480_000,
     lab_space: bool = True,
+    vividness: float = 0.0,
 ) -> ClusteredImage:
     """k クラスタでクラスタリングし、「量子化画像」と「生の k 色パレット」を返す.
 
@@ -216,7 +217,9 @@ def cluster_and_quantize(
     fit_pixels = load_pixels(image, max_pixels=max_fit_pixels)
     k = max(1, min(k, len(fit_pixels)))
 
-    km = KMedoidsLite(n_clusters=k, random_state=seed, lab_space=lab_space)
+    km = KMedoidsLite(
+        n_clusters=k, random_state=seed, lab_space=lab_space, vividness=vividness
+    )
     km.fit(fit_pixels)
     centers = km.cluster_centers_
 
