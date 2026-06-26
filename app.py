@@ -1,9 +1,13 @@
 """カラーパレット抽出 Streamlit アプリ.
 
 イラスト・絵画・写真などの画像をアップロードすると、使われている色を
-K-means クラスタリングで抽出し、数色のカラーパレットを作成する。
+K-means クラスタリングで抽出し、CIELAB ΔE で基本色名（赤・橙・黄…）に
+近似・集約してカラーパレットを作成する。
 アクセントカラー（5〜10% 付近の色）が抽出できる最小クラスタ数を
 二分探索で探し、そのパレットを表示する。
+
+表示レイアウト:
+    入力画像 → 横向きの積み上げ棒グラフ → 丸＋色名＋#RRGGBB＋割合 の凡例
 
 起動:
     streamlit run app.py
@@ -34,34 +38,64 @@ st.set_page_config(page_title="カラーパレット抽出", page_icon="🎨", l
 def _text_color_for(rgb: tuple[int, int, int]) -> str:
     """背景色に対して読みやすい文字色（黒/白）を返す."""
     r, g, b = rgb
-    # 相対輝度（簡易）
     luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
     return "#000000" if luminance > 0.55 else "#FFFFFF"
 
 
-def render_palette(palette: Palette) -> None:
-    """パレットを横並びの色バーで描画する."""
-    cols = st.columns(len(palette.colors))
-    for col, color in zip(cols, palette.colors):
-        fg = _text_color_for(color.rgb)
-        border = "3px solid #FF3B30" if color.is_accent else "1px solid #ddd"
-        badge = "⭐ アクセント" if color.is_accent else "&nbsp;"
-        col.markdown(
-            f"""
-            <div style="background-color:{color.hex};
-                        color:{fg};
-                        border:{border};
-                        border-radius:8px;
-                        padding:14px 8px;
-                        text-align:center;
-                        font-family:monospace;">
-                <div style="font-size:0.7rem;height:1rem;">{badge}</div>
-                <div style="font-weight:bold;margin-top:6px;">{color.hex}</div>
-                <div style="font-size:1.1rem;margin-top:4px;">{color.percent:.1f}%</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+def palette_html(palette: Palette) -> str:
+    """パレットの「横向き積み上げ棒グラフ＋丸の凡例」HTML を組み立てて返す.
+
+    1) 各色を幅＝割合のセグメントとして並べた横棒
+    2) その下に、丸（その色）＋色名＋#RRGGBB＋割合 の凡例リスト
+    """
+    if not palette.colors:
+        return ""
+
+    # --- 1) 横向き積み上げ棒グラフ ---
+    segments = ""
+    for c in palette.colors:
+        width = c.proportion * 100.0
+        fg = _text_color_for(c.rgb)
+        # 幅が十分あるセグメントにだけ割合ラベルを載せる
+        label = f"{c.percent:.0f}%" if width >= 7 else ""
+        segments += (
+            f'<div title="{c.name} {c.hex} {c.percent:.1f}%" '
+            f'style="width:{width}%;background:{c.hex};color:{fg};'
+            f"display:flex;align-items:center;justify-content:center;"
+            f'font-size:0.8rem;font-family:monospace;">{label}</div>'
         )
+    bar = (
+        '<div style="display:flex;width:100%;height:56px;border-radius:8px;'
+        f'overflow:hidden;border:1px solid #ccc;">{segments}</div>'
+    )
+
+    # --- 2) 丸の凡例リスト ---
+    rows = ""
+    for c in palette.colors:
+        name = f"{c.name}　" if c.name else ""
+        star = (
+            '<span style="color:#FF3B30;font-weight:bold;">　⭐ アクセント</span>'
+            if c.is_accent
+            else ""
+        )
+        rows += (
+            '<div style="display:flex;align-items:center;gap:12px;margin:8px 0;">'
+            f'<span style="display:inline-block;width:24px;height:24px;'
+            f"border-radius:50%;background:{c.hex};border:1px solid #bbb;"
+            'flex:none;"></span>'
+            f'<span style="font-family:monospace;font-size:1rem;">'
+            f"{name}{c.hex}　—　{c.percent:.1f}%{star}</span>"
+            "</div>"
+        )
+
+    return bar + '<div style="height:14px;"></div>' + rows
+
+
+def render_palette(palette: Palette) -> None:
+    """パレットを描画する（横棒グラフ＋丸の凡例）."""
+    html = palette_html(palette)
+    if html:
+        st.markdown(html, unsafe_allow_html=True)
 
 
 def palette_table(palette: Palette) -> list[dict]:
@@ -71,6 +105,7 @@ def palette_table(palette: Palette) -> list[dict]:
         rows.append(
             {
                 "順位": i,
+                "色名": c.name,
                 "16進数": c.hex,
                 "RGB": f"{c.rgb[0]}, {c.rgb[1]}, {c.rgb[2]}",
                 "割合(%)": round(c.percent, 2),
@@ -83,8 +118,9 @@ def palette_table(palette: Palette) -> list[dict]:
 def main() -> None:
     st.title("🎨 カラーパレット抽出アプリ")
     st.caption(
-        "画像の色を K-means クラスタリングで減色し、アクセントカラーが抽出できる"
-        "最小クラスタ数を二分探索で探してパレットを作ります。"
+        "画像の色を K-means で減色し、基本色名（赤・橙・黄…）に近似・集約して"
+        "パレットを作ります。アクセントカラーが抽出できる最小クラスタ数を"
+        "二分探索で探します。"
     )
 
     # ---- サイドバー：パラメータ ----
@@ -102,6 +138,13 @@ def main() -> None:
         )
         accent_low = accent_range[0] / 100.0
         accent_high = accent_range[1] / 100.0
+
+        aggregate = st.toggle(
+            "基本色名に近似・集約する",
+            value=True,
+            help="ON: 似た色を基本色名（赤・橙…）にまとめてからアクセント判定。"
+            "OFF: 各クラスタをそのまま色として扱う（従来動作）。",
+        )
 
         st.subheader("クラスタ数の探索範囲")
         k_max = st.number_input(
@@ -138,15 +181,15 @@ def main() -> None:
     )
 
     if uploaded is None:
-        st.info("👈 まず画像をアップロードしてください。")
+        st.info("👆 まず画像をアップロードしてください。")
         return
 
     image = Image.open(io.BytesIO(uploaded.read()))
 
-    left, right = st.columns([1, 1])
-    with left:
-        st.subheader("入力画像")
-        st.image(image, use_container_width=True)
+    # ---- 入力画像（上） ----
+    st.subheader("入力画像")
+    img_col, _ = st.columns([2, 1])
+    img_col.image(image, use_container_width=True)
 
     # ---- 解析 ----
     with st.spinner("クラスタリング中..."):
@@ -158,28 +201,42 @@ def main() -> None:
             accent_low=accent_low,
             accent_high=accent_high,
             seed=int(seed),
+            aggregate=aggregate,
         )
 
-    with right:
-        st.subheader(f"初期クラスタ数 k={result.base_palette.k} のパレット")
-        render_palette(result.base_palette)
-
-    st.divider()
-
-    # ---- 探索結果 ----
+    # ---- パレット（画像の下） ----
     if result.min_k is None:
         st.warning(
             f"指定した範囲（{accent_low*100:.1f}〜{accent_high*100:.1f}%）の"
             f"アクセントカラーは k={result.base_palette.k} でも見つかりませんでした。"
             "アクセント範囲を広げて再試行してみてください。"
         )
+        st.subheader(f"カラーパレット（k = {result.base_palette.k}）")
+        render_palette(result.base_palette)
         return
 
     st.success(
         f"✅ アクセントカラーが抽出できる最小クラスタ数は **k = {result.min_k}** です。"
     )
 
-    # 探索の経過を表示
+    final = result.final_palette
+    st.subheader(f"🎨 カラーパレット（k = {final.k}）")
+    render_palette(final)
+
+    accents = final.accent_colors
+    if accents:
+        st.markdown(
+            "**アクセントカラー:** "
+            + " / ".join(
+                f"{c.name + ' ' if c.name else ''}`{c.hex}` ({c.percent:.1f}%)"
+                for c in accents
+            )
+        )
+
+    # ---- 補足情報（折りたたみ） ----
+    with st.expander("📋 パレットの詳細（表）"):
+        st.table(palette_table(final))
+
     with st.expander("🔍 二分探索の経過を見る"):
         trace_rows = [
             {"試したクラスタ数 k": k, "アクセント抽出": "○ できた" if ok else "✗ できない"}
@@ -191,20 +248,8 @@ def main() -> None:
             "最小の k を二分探索しています。"
         )
 
-    # ---- 最終パレット ----
-    final = result.final_palette
-    st.subheader(f"🎨 最終カラーパレット（k = {final.k}）")
-    render_palette(final)
-
-    st.markdown("#### 詳細")
-    st.table(palette_table(final))
-
-    accents = final.accent_colors
-    if accents:
-        st.markdown(
-            "**アクセントカラー:** "
-            + " / ".join(f"`{c.hex}` ({c.percent:.1f}%)" for c in accents)
-        )
+    with st.expander(f"🧩 初期クラスタ数 k={result.base_palette.k} のパレット"):
+        render_palette(result.base_palette)
 
 
 if __name__ == "__main__":

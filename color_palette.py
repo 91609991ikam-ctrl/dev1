@@ -24,6 +24,8 @@ from PIL import Image
 from sklearn.cluster import KMeans
 from sklearn.exceptions import ConvergenceWarning
 
+from color_naming import BASIC_NAMES_JA, nearest_basic_index, nearest_real_pixel
+
 
 # クラスタリングの再現性を保つための既定シード
 DEFAULT_SEED = 42
@@ -42,6 +44,7 @@ class ColorEntry:
     rgb: tuple[int, int, int]
     proportion: float  # 0.0〜1.0
     is_accent: bool
+    name: str = ""  # 基本色名（集約時のみ。例: "赤"）
 
     @property
     def hex(self) -> str:
@@ -99,17 +102,32 @@ def load_pixels(image: Image.Image, max_pixels: int = 100_000) -> np.ndarray:
     return arr
 
 
+def _to_rgb_tuple(arr) -> tuple[int, int, int]:
+    """float の色配列を 0-255 の int タプルに丸めてクランプする."""
+    r, g, b = (int(round(float(v))) for v in arr)
+    return (max(0, min(255, r)), max(0, min(255, g)), max(0, min(255, b)))
+
+
 def make_palette(
     pixels: np.ndarray,
     k: int,
     accent_low: float = DEFAULT_ACCENT_LOW,
     accent_high: float = DEFAULT_ACCENT_HIGH,
     seed: int = DEFAULT_SEED,
+    aggregate: bool = True,
 ) -> Palette:
     """ピクセル配列を k クラスタにクラスタリングしてパレットを作る.
 
-    各クラスタの中心色を代表色、要素数の割合をその色の割合とする。
-    割合が [accent_low, accent_high] に入る色をアクセントカラーとする。
+    aggregate=True（既定）の場合:
+      各クラスタ中心を CIELAB ΔE で最も近い基本色名に対応づけ、同じ色名の
+      クラスタの割合を合算する。各色名の代表色（スウィッチ）は、そのグループの
+      割合加重平均色に最も近い「実在画素色」を画像から選ぶ。
+      これにより、分裂した同系色がまとまりアクセントが安定して出やすくなる。
+
+    aggregate=False の場合:
+      各クラスタ中心をそのまま 1 色として扱う（従来動作）。
+
+    いずれも割合が [accent_low, accent_high] に入る色をアクセントとし、
     結果は割合の降順に並べる。
     """
     k = max(1, min(k, len(pixels)))
@@ -125,13 +143,39 @@ def make_palette(
     total = counts.sum()
     proportions = counts / total if total else np.zeros(k)
 
+    def _entry(prop: float, rgb: tuple[int, int, int], name: str = "") -> ColorEntry:
+        return ColorEntry(
+            rgb=rgb,
+            proportion=prop,
+            is_accent=accent_low <= prop <= accent_high,
+            name=name,
+        )
+
     entries: list[ColorEntry] = []
-    for i in range(k):
-        r, g, b = (int(round(v)) for v in centers[i])
-        r, g, b = (max(0, min(255, c)) for c in (r, g, b))
-        prop = float(proportions[i])
-        is_accent = accent_low <= prop <= accent_high
-        entries.append(ColorEntry(rgb=(r, g, b), proportion=prop, is_accent=is_accent))
+
+    if not aggregate:
+        for i in range(k):
+            entries.append(_entry(float(proportions[i]), _to_rgb_tuple(centers[i])))
+    else:
+        # 各クラスタ中心を最も近い基本色名に対応づけ
+        cluster_basic = nearest_basic_index(centers)  # shape (k,)
+        for b_idx in np.unique(cluster_basic):
+            member_clusters = np.where(cluster_basic == b_idx)[0]
+            group_count = counts[member_clusters].sum()
+            if group_count == 0:
+                continue
+            prop = float(group_count / total) if total else 0.0
+
+            # グループの割合加重平均色（合成色になりうる）
+            weights = counts[member_clusters].astype(np.float64)
+            avg = np.average(centers[member_clusters], axis=0, weights=weights)
+
+            # 平均色に最も近い「実在画素」をグループ内から選んでスウィッチにする
+            member_mask = np.isin(labels, member_clusters)
+            member_pixels = pixels[member_mask]
+            swatch = nearest_real_pixel(avg, member_pixels)
+
+            entries.append(_entry(prop, _to_rgb_tuple(swatch), BASIC_NAMES_JA[b_idx]))
 
     # 割合の降順に並べ替え（多い順）
     entries.sort(key=lambda c: c.proportion, reverse=True)
@@ -145,6 +189,7 @@ def find_min_accent_k(
     accent_low: float = DEFAULT_ACCENT_LOW,
     accent_high: float = DEFAULT_ACCENT_HIGH,
     seed: int = DEFAULT_SEED,
+    aggregate: bool = True,
 ) -> SearchResult:
     """アクセントカラーが抽出できる最小クラスタ数を二分探索で探す.
 
@@ -162,13 +207,13 @@ def find_min_accent_k(
 
     def predicate(k: int) -> bool:
         if k not in palettes:
-            palettes[k] = make_palette(pixels, k, accent_low, accent_high, seed)
+            palettes[k] = make_palette(pixels, k, accent_low, accent_high, seed, aggregate)
         has = palettes[k].has_accent
         trace.append((k, has))
         return has
 
     # 初期クラスタ数 k_max でアクセントカラーを定義・確認
-    base_palette = make_palette(pixels, k_max, accent_low, accent_high, seed)
+    base_palette = make_palette(pixels, k_max, accent_low, accent_high, seed, aggregate)
     palettes[k_max] = base_palette
 
     # k_max でもアクセントが無ければ探索不能
