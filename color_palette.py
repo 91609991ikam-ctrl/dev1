@@ -1,6 +1,6 @@
 """カラーパレット抽出のコアロジック.
 
-画像のピクセル色を K-means（教師なし学習：クラスタリング）で減色し、
+画像のピクセル色を k-medoids（教師なし学習：クラスタリング）で減色し、
 各色の割合を求めて「アクセントカラー」を定義する。
 さらに、そのアクセントカラーが抽出できる最小クラスタ数を二分探索で探す。
 
@@ -8,7 +8,7 @@
   1. 画像を入力
   2. クラスタリングで色を減らす（初期クラスタ数=16）
   3. クラスタの要素数から割合を算出し、降順に並べ替え
-  4. 5〜10% 付近のクラスタを「アクセントカラー」と定義
+  4. 0〜10% のクラスタを「アクセントカラー」と定義
   5. アクセントカラーが抽出できる最小クラスタ数を、
      様々なクラスタ数でクラスタリングして探す（二分探索）
   6. 最小クラスタ数でパレットを作成し、アクセントカラー・16進数・割合を示す
@@ -16,13 +16,10 @@
 
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
 from PIL import Image
-from sklearn.cluster import KMeans
-from sklearn.exceptions import ConvergenceWarning
 
 from clustering import KMedoidsLite
 from color_naming import (
@@ -32,37 +29,11 @@ from color_naming import (
     nearest_real_pixel,
 )
 
-# クラスタリング手法
-METHOD_KMEANS = "kmeans"
-METHOD_KMEDOIDS = "kmedoids"
-DEFAULT_METHOD = METHOD_KMEDOIDS
-
-
-def _build_clusterer(
-    method: str,
-    k: int,
-    seed: int,
-    lab_space: bool = True,
-    saturation_aware: bool = True,
-):
-    """手法名に応じてクラスタリング器を返す（sklearn 互換 API）.
-
-    lab_space / saturation_aware は k-medoids のみで有効（k-means では無視）。
-    """
-    if method == METHOD_KMEDOIDS:
-        return KMedoidsLite(
-            n_clusters=k,
-            random_state=seed,
-            lab_space=lab_space,
-            saturation_aware=saturation_aware,
-        )
-    return KMeans(n_clusters=k, random_state=seed, n_init=10)
-
 
 # クラスタリングの再現性を保つための既定シード
 DEFAULT_SEED = 42
-# 「アクセントカラー」とみなす割合の既定範囲（5〜10%）
-DEFAULT_ACCENT_LOW = 0.05
+# 「アクセントカラー」とみなす割合の既定範囲（0〜10%）
+DEFAULT_ACCENT_LOW = 0.00
 DEFAULT_ACCENT_HIGH = 0.10
 # 探索するクラスタ数の既定範囲
 DEFAULT_K_MIN = 2
@@ -156,9 +127,7 @@ def make_palette(
     seed: int = DEFAULT_SEED,
     aggregate: bool = True,
     exclude_achromatic: bool = True,
-    method: str = DEFAULT_METHOD,
     lab_space: bool = True,
-    saturation_aware: bool = True,
 ) -> Palette:
     """ピクセル配列を k クラスタにクラスタリングしてパレットを作る.
 
@@ -176,11 +145,8 @@ def make_palette(
     """
     k = max(1, min(k, len(pixels)))
 
-    km = _build_clusterer(method, k, seed, lab_space, saturation_aware)
-    with warnings.catch_warnings():
-        # べた塗り画像など、実際の色数 < k のときの警告は想定内なので抑制
-        warnings.simplefilter("ignore", category=ConvergenceWarning)
-        labels = km.fit_predict(pixels)
+    km = KMedoidsLite(n_clusters=k, random_state=seed, lab_space=lab_space)
+    labels = km.fit_predict(pixels)
     centers = km.cluster_centers_
 
     counts = np.bincount(labels, minlength=k)
@@ -236,9 +202,7 @@ def cluster_and_quantize(
     seed: int = DEFAULT_SEED,
     max_fit_pixels: int = 100_000,
     max_display_pixels: int = 480_000,
-    method: str = DEFAULT_METHOD,
     lab_space: bool = True,
-    saturation_aware: bool = True,
 ) -> ClusteredImage:
     """k クラスタでクラスタリングし、「量子化画像」と「生の k 色パレット」を返す.
 
@@ -252,10 +216,8 @@ def cluster_and_quantize(
     fit_pixels = load_pixels(image, max_pixels=max_fit_pixels)
     k = max(1, min(k, len(fit_pixels)))
 
-    km = _build_clusterer(method, k, seed, lab_space, saturation_aware)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", category=ConvergenceWarning)
-        km.fit(fit_pixels)
+    km = KMedoidsLite(n_clusters=k, random_state=seed, lab_space=lab_space)
+    km.fit(fit_pixels)
     centers = km.cluster_centers_
 
     counts = np.bincount(km.labels_, minlength=k)
@@ -302,9 +264,7 @@ def find_min_accent_k(
     seed: int = DEFAULT_SEED,
     aggregate: bool = True,
     exclude_achromatic: bool = True,
-    method: str = DEFAULT_METHOD,
     lab_space: bool = True,
-    saturation_aware: bool = True,
 ) -> SearchResult:
     """アクセントカラーが抽出できる最小クラスタ数を二分探索で探す.
 
@@ -324,7 +284,7 @@ def find_min_accent_k(
         if k not in palettes:
             palettes[k] = make_palette(
                 pixels, k, accent_low, accent_high, seed, aggregate,
-                exclude_achromatic, method, lab_space, saturation_aware,
+                exclude_achromatic, lab_space,
             )
         has = palettes[k].has_accent
         trace.append((k, has))
@@ -333,7 +293,7 @@ def find_min_accent_k(
     # 初期クラスタ数 k_max でアクセントカラーを定義・確認
     base_palette = make_palette(
         pixels, k_max, accent_low, accent_high, seed, aggregate,
-        exclude_achromatic, method, lab_space, saturation_aware,
+        exclude_achromatic, lab_space,
     )
     palettes[k_max] = base_palette
 

@@ -1,21 +1,17 @@
-"""軽量な k-medoids 実装（CIELAB 距離・彩度考慮の代表色）.
+"""軽量な k-medoids 実装（CIELAB 距離）.
 
 k-means は各クラスタを「平均色（重心）」で代表するため、鮮やかな色が周囲と
-平均されてくすみやすい。k-medoids は代表色を「実在する画素」にするため、平均に
-よる色の濁りを避けられる。
+平均されてくすみやすい。k-medoids は代表色を「実在する画素（medoid）」にする
+ため、平均による色の濁りを避けられる。
 
-本実装の特徴:
-  - 距離を **CIELAB（ΔE76）** で計算（知覚的に分割。赤と背景が分かれやすい）。
-    lab_space=False で RGB 距離にも切替可能（手法比較用）。
-  - 代表色を **彩度考慮** で選ぶ（saturation_aware）。クラスタ中心付近の実画素の
-    うち、Lab 彩度 C=√(a²+b²) が最大の画素を代表色にする。中心付近に限ることで
-    外れ値（極端に派手な1画素）を拾わず、くすみだけを抑える。
+距離は **CIELAB（ΔE76）** で計算する（知覚的に分割。赤と背景が分かれやすい）。
+lab_space=False で RGB 距離にも切替可能（手法比較用）。
 
 medoid 法は距離行列が O(n^2) になり全画素には適用できないので、学習は部分標本
 （sample_size 個）で行い、全画素は最近傍 medoid へ割り当てる（CLARA 的手法）。
 
 scikit-learn と同様の API（fit / fit_predict / predict / cluster_centers_ / labels_）
-を持たせ、既存コードで KMeans と差し替え可能にする。cluster_centers_ は RGB。
+を持たせる。cluster_centers_ は RGB。
 """
 
 from __future__ import annotations
@@ -23,11 +19,6 @@ from __future__ import annotations
 import numpy as np
 
 from color_naming import srgb_to_lab
-
-
-def _lab_chroma(lab: np.ndarray) -> np.ndarray:
-    """Lab 配列 (...,3) の彩度 C=√(a²+b²) を返す."""
-    return np.sqrt(lab[..., 1] ** 2 + lab[..., 2] ** 2)
 
 
 class KMedoidsLite:
@@ -40,16 +31,12 @@ class KMedoidsLite:
         sample_size: int = 2500,
         max_iter: int = 50,
         lab_space: bool = True,
-        saturation_aware: bool = True,
-        sat_weight: float = 0.5,
     ):
         self.n_clusters = n_clusters
         self.random_state = random_state
         self.sample_size = sample_size
         self.max_iter = max_iter
         self.lab_space = lab_space
-        self.saturation_aware = saturation_aware
-        self.sat_weight = sat_weight
         self.cluster_centers_: np.ndarray | None = None
         self.labels_: np.ndarray | None = None
         self._medoid_feat: np.ndarray | None = None  # predict 用の medoid 特徴量
@@ -78,33 +65,6 @@ class KMedoidsLite:
             chosen.append(nxt)
             closest = np.minimum(closest, dist[nxt])
         return np.array(chosen, dtype=int)
-
-    def _representative(
-        self,
-        members: np.ndarray,
-        sample_feat: np.ndarray,
-        sample_rgb: np.ndarray,
-        medoid: int,
-    ) -> int:
-        """クラスタの代表となる実画素のインデックスを返す（彩度考慮）.
-
-        「彩度が高く、かつクラスタ中心(medoid)から離れすぎない」実画素を選ぶ。
-        各メンバの 彩度 と medoid からの距離を 0..1 に正規化し、
-        score = 彩度 - sat_weight × 距離 を最大化する画素を代表色にする。
-        これにより、くすみを抑えつつ、極端に派手な外れ値の 1 画素も拾わない。
-        """
-        if not self.saturation_aware or len(members) == 1:
-            return int(medoid)
-
-        chroma = _lab_chroma(srgb_to_lab(sample_rgb[members]))
-        dist = np.linalg.norm(sample_feat[members] - sample_feat[medoid], axis=1)
-
-        def _norm(x: np.ndarray) -> np.ndarray:
-            span = x.max() - x.min()
-            return (x - x.min()) / span if span > 0 else np.zeros_like(x)
-
-        score = _norm(chroma) - self.sat_weight * _norm(dist)
-        return int(members[int(np.argmax(score))])
 
     def fit(self, X: np.ndarray) -> "KMedoidsLite":
         X = np.asarray(X, dtype=np.float64)
@@ -135,17 +95,9 @@ class KMedoidsLite:
             medoids = new_medoids
             labels = np.argmin(dist[:, medoids], axis=1)
 
-        # 割当（predict）は medoid（中心）を基準にする
+        # 代表色は medoid（実在画素）の RGB
         self._medoid_feat = sample_feat[medoids].copy()
-
-        # 表示用の代表色は彩度考慮で選んだ実画素（RGB）
-        reps = np.array(
-            [
-                self._representative(np.where(labels == c)[0], sample_feat, sample_rgb, medoids[c])
-                for c in range(k)
-            ]
-        )
-        self.cluster_centers_ = sample_rgb[reps].copy()
+        self.cluster_centers_ = sample_rgb[medoids].copy()
         self.labels_ = self.predict(X)
         return self
 

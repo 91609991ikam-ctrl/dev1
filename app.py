@@ -26,8 +26,6 @@ from color_palette import (
     DEFAULT_K_MAX,
     DEFAULT_K_MIN,
     DEFAULT_SEED,
-    METHOD_KMEANS,
-    METHOD_KMEDOIDS,
     Palette,
     cluster_and_quantize,
     find_min_accent_k,
@@ -133,30 +131,13 @@ def main() -> None:
     with st.sidebar:
         st.header("⚙️ パラメータ")
 
-        st.subheader("クラスタリング手法")
-        method_label = st.radio(
-            "手法",
-            options=["k-medoids（実色・鮮やか）", "k-means（平均）"],
-            index=0,
-            help="k-medoids は代表色に実在画素を使うため、平均による色のくすみを"
-            "避けられます。k-means は各クラスタを平均色で代表します。",
-        )
-        method = METHOD_KMEDOIDS if method_label.startswith("k-medoids") else METHOD_KMEANS
-
-        is_medoids = method == METHOD_KMEDOIDS
+        st.subheader("クラスタリング")
+        st.caption("手法: k-medoids（代表色に実在画素を使い色のくすみを避ける）")
         lab_space = st.toggle(
             "知覚的距離 CIELAB で分割",
             value=True,
-            disabled=not is_medoids,
             help="ON: 距離を CIELAB(ΔE) で計算し知覚的に分割（赤と背景が分かれやすい）。"
-            "OFF: RGB 距離。k-medoids 選択時のみ有効。",
-        )
-        saturation_aware = st.toggle(
-            "彩度を考慮した代表色",
-            value=True,
-            disabled=not is_medoids,
-            help="ON: クラスタ中心付近の実画素のうち最も鮮やかな色を代表色にする"
-            "（くすみ防止）。k-medoids 選択時のみ有効。",
+            "OFF: RGB 距離。",
         )
 
         st.subheader("アクセントカラーの範囲")
@@ -205,7 +186,7 @@ def main() -> None:
         max_pixels = st.select_slider(
             "サンプリング上限ピクセル数",
             options=[10_000, 50_000, 100_000, 200_000, 500_000],
-            value=100_000,
+            value=50_000,
             help="速度のため画像を縮小してから処理します。大きいほど精密・低速。",
         )
         seed = st.number_input(
@@ -237,9 +218,7 @@ def main() -> None:
             seed=int(seed),
             aggregate=aggregate,
             exclude_achromatic=exclude_achromatic,
-            method=method,
             lab_space=lab_space,
-            saturation_aware=saturation_aware,
         )
 
     # 表示する k と、アクセント判定（集約ベース）に使う色名集合を決める
@@ -255,9 +234,7 @@ def main() -> None:
             accent_names=accent_names,
             seed=int(seed),
             max_fit_pixels=int(max_pixels),
-            method=method,
             lab_space=lab_space,
-            saturation_aware=saturation_aware,
         )
 
     # ---- 入力画像 と クラスタリング後の画像（上に縦並び） ----
