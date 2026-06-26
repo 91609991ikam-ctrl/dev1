@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 
 
-# 基本色名11色のアンカー（代表色, sRGB 0-255）。
+# 基本色名のアンカー（代表色, sRGB 0-255）。
 # 「なぜこの代表色か」を後で詰めやすいよう、ここの表を編集するだけで調整できる。
 # (日本語名, 英語名, (R, G, B))
 BASIC_COLORS: list[tuple[str, str, tuple[int, int, int]]] = [
@@ -22,7 +22,6 @@ BASIC_COLORS: list[tuple[str, str, tuple[int, int, int]]] = [
     ("青", "blue", (40, 70, 200)),
     ("紫", "purple", (130, 60, 160)),
     ("桃", "pink", (240, 160, 180)),
-    ("茶", "brown", (130, 70, 35)),
     ("白", "white", (245, 245, 245)),
     ("灰", "gray", (140, 140, 140)),
     ("黒", "black", (30, 30, 30)),
