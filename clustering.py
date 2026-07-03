@@ -21,8 +21,20 @@ import numpy as np
 from color_naming import srgb_to_lab
 
 
+def _lab_chroma(lab: np.ndarray) -> np.ndarray:
+    """Lab 配列 (...,3) の彩度 C=√(a²+b²) を返す."""
+    return np.sqrt(lab[..., 1] ** 2 + lab[..., 2] ** 2)
+
+
 class KMedoidsLite:
-    """部分標本＋交互最適化（PAM 風）による k-medoids."""
+    """部分標本＋交互最適化（PAM 風）による k-medoids.
+
+    精度改善の研究レバー（既定は無効でメインアプリと同一挙動）:
+      - ab_scale (α): Lab の a*,b* 軸を α 倍して彩度方向の距離を強調する。
+        鮮やかな色（軸から遠い先端）が自前のクラスタに分離されやすくなる（割合は正直）。
+      - chroma_gamma (γ): 各画素を彩度 C^γ で重み付けし、medoid 更新を重み付きにする。
+        代表色が分布の先端（高彩度）へ寄る＝見た目が鮮やかになる（割合は水増しに注意）。
+    """
 
     def __init__(
         self,
@@ -31,20 +43,34 @@ class KMedoidsLite:
         sample_size: int = 2500,
         max_iter: int = 50,
         lab_space: bool = True,
+        ab_scale: float = 1.0,
+        chroma_gamma: float = 0.0,
     ):
         self.n_clusters = n_clusters
         self.random_state = random_state
         self.sample_size = sample_size
         self.max_iter = max_iter
         self.lab_space = lab_space
+        self.ab_scale = ab_scale
+        self.chroma_gamma = chroma_gamma
         self.cluster_centers_: np.ndarray | None = None
         self.labels_: np.ndarray | None = None
         self._medoid_feat: np.ndarray | None = None  # predict 用の medoid 特徴量
 
     def _features(self, rgb: np.ndarray) -> np.ndarray:
-        """距離計算に使う特徴量（Lab または RGB）に変換する."""
+        """距離計算に使う特徴量（Lab または RGB）に変換する.
+
+        lab_space かつ ab_scale≠1 のとき、a*,b* 軸を ab_scale 倍して彩度方向を強調する。
+        """
         rgb = np.asarray(rgb, dtype=np.float64)
-        return srgb_to_lab(rgb) if self.lab_space else rgb
+        if not self.lab_space:
+            return rgb
+        lab = srgb_to_lab(rgb)
+        if self.ab_scale != 1.0:
+            lab = lab.copy()
+            lab[..., 1] *= self.ab_scale
+            lab[..., 2] *= self.ab_scale
+        return lab
 
     @staticmethod
     def _pairwise(a: np.ndarray) -> np.ndarray:
@@ -79,6 +105,12 @@ class KMedoidsLite:
         sample_feat = self._features(sample_rgb)
         dist = self._pairwise(sample_feat)
 
+        # 彩度重み（chroma_gamma>0 のとき）。重みは元の（スケール前）Lab 彩度から作る
+        weights = None
+        if self.chroma_gamma > 0:
+            chroma = _lab_chroma(srgb_to_lab(sample_rgb))
+            weights = np.power(chroma, self.chroma_gamma)
+
         # 初期 medoid → 交互最適化（割当 → 各クラスタの medoid 更新）
         medoids = self._kpp_init(dist, k, rng)
         labels = np.argmin(dist[:, medoids], axis=1)
@@ -88,8 +120,13 @@ class KMedoidsLite:
                 members = np.where(labels == c)[0]
                 if len(members) == 0:
                     continue
-                intra = dist[np.ix_(members, members)].sum(axis=1)
-                new_medoids[c] = members[int(np.argmin(intra))]
+                sub = dist[np.ix_(members, members)]
+                # 重み付きなら Σ w_j·d(candidate, j) を最小化（代表色が高彩度側へ寄る）
+                if weights is None:
+                    cost = sub.sum(axis=1)
+                else:
+                    cost = (sub * weights[members][None, :]).sum(axis=1)
+                new_medoids[c] = members[int(np.argmin(cost))]
             if np.array_equal(new_medoids, medoids):
                 break
             medoids = new_medoids

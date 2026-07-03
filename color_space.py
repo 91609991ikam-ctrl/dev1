@@ -48,14 +48,26 @@ def make_color_figure(
     max_points: int = 5000,
     seed: int = 42,
     lab_space: bool = True,
+    ab_scale: float = 1.0,
+    chroma_gamma: float = 0.0,
     marker_size: int = 2,
 ) -> go.Figure:
-    """RGB と CIELAB の 3D 散布図（medoid 重ね・色切替つき）を作って返す."""
+    """RGB と CIELAB の 3D 散布図（medoid 重ね・色切替つき）を作って返す.
+
+    ab_scale（α: 彩度方向の距離強調＝分離）と chroma_gamma（γ: 彩度重み＝先端寄せ）を
+    渡すと、代表色（◆）が高彩度側にどう動くかを観察できる。
+    """
     pixels = sample_pixels(image, max_points, seed)
     lab = srgb_to_lab(pixels)
 
     # k-medoids でクラスタ中心（実在画素）を求め、各画素の割り当て代表色を得る
-    km = KMedoidsLite(n_clusters=k, random_state=seed, lab_space=lab_space)
+    km = KMedoidsLite(
+        n_clusters=k,
+        random_state=seed,
+        lab_space=lab_space,
+        ab_scale=ab_scale,
+        chroma_gamma=chroma_gamma,
+    )
     km.fit(pixels)
     centers = km.cluster_centers_
     centers_lab = srgb_to_lab(centers)
@@ -145,7 +157,10 @@ def make_color_figure(
         ),
         margin=dict(l=0, r=0, t=60, b=0),
         legend=dict(x=0.0, y=1.0),
-        title=f"色の 3D 分布（サンプル {len(pixels)} 点 / medoid k={k}）",
+        title=(
+            f"色の 3D 分布（サンプル {len(pixels)} 点 / medoid k={k} / "
+            f"α={ab_scale:g} γ={chroma_gamma:g}）"
+        ),
     )
     return fig
 
@@ -156,11 +171,18 @@ def _main() -> None:
     parser.add_argument("--k", type=int, default=16, help="medoid のクラスタ数")
     parser.add_argument("--max-points", type=int, default=5000, help="散布図に描く最大点数")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--ab-scale", type=float, default=1.0, help="α: a*,b* 軸の強調（分離）")
+    parser.add_argument("--chroma-gamma", type=float, default=0.0, help="γ: 彩度重み（先端寄せ）")
     parser.add_argument("--out", default="color_space.html", help="出力 HTML パス")
     args = parser.parse_args()
 
     fig = make_color_figure(
-        Image.open(args.image), k=args.k, max_points=args.max_points, seed=args.seed
+        Image.open(args.image),
+        k=args.k,
+        max_points=args.max_points,
+        seed=args.seed,
+        ab_scale=args.ab_scale,
+        chroma_gamma=args.chroma_gamma,
     )
     fig.write_html(args.out, include_plotlyjs=True)
     print(f"書き出しました: {args.out}")
