@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 
 import numpy as np
 import plotly.graph_objects as go
@@ -24,6 +25,15 @@ from plotly.subplots import make_subplots
 
 from clustering import KMedoidsLite
 from color_naming import srgb_to_lab
+
+
+@dataclass
+class ColorSpaceResult:
+    """3D プロットと、そこで使った代表色（medoid）・割合をまとめて返す."""
+
+    figure: go.Figure
+    centers: np.ndarray  # (k,3) RGB。割合の降順にソート済み
+    proportions: np.ndarray  # (k,) 各代表色の割合（サンプル中の占有率）
 
 
 def _rgb_strings(rgb: np.ndarray) -> list[str]:
@@ -42,7 +52,7 @@ def sample_pixels(image: Image.Image, max_points: int, seed: int = 0) -> np.ndar
     return arr
 
 
-def make_color_figure(
+def analyze(
     image: Image.Image,
     k: int = 16,
     max_points: int = 5000,
@@ -51,8 +61,8 @@ def make_color_figure(
     ab_scale: float = 1.0,
     chroma_gamma: float = 0.0,
     marker_size: int = 2,
-) -> go.Figure:
-    """RGB と CIELAB の 3D 散布図（medoid 重ね・色切替つき）を作って返す.
+) -> ColorSpaceResult:
+    """3D 散布図を作り、代表色（medoid）と割合も添えて返す.
 
     ab_scale（α: 彩度方向の距離強調＝分離）と chroma_gamma（γ: 彩度重み＝先端寄せ）を
     渡すと、代表色（◆）が高彩度側にどう動くかを観察できる。
@@ -71,6 +81,11 @@ def make_color_figure(
     km.fit(pixels)
     centers = km.cluster_centers_
     centers_lab = srgb_to_lab(centers)
+
+    # 代表色の割合（サンプル中の占有率）を計算し、降順の並びを控えておく
+    counts = np.bincount(km.labels_, minlength=len(centers))
+    proportions = counts / counts.sum() if counts.sum() else np.zeros(len(centers))
+    order = np.argsort(-proportions)
     assigned = centers[km.predict(pixels)]  # 各画素に割り当てられた代表色
 
     true_colors = _rgb_strings(pixels)
@@ -162,7 +177,16 @@ def make_color_figure(
             f"α={ab_scale:g} γ={chroma_gamma:g}）"
         ),
     )
-    return fig
+    return ColorSpaceResult(
+        figure=fig,
+        centers=centers[order],
+        proportions=proportions[order],
+    )
+
+
+def make_color_figure(image: Image.Image, **kwargs) -> go.Figure:
+    """3D 散布図だけを返す薄いラッパー（後方互換・CLI 用）."""
+    return analyze(image, **kwargs).figure
 
 
 def _main() -> None:

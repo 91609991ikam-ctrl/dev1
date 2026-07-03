@@ -15,18 +15,18 @@ import io
 import streamlit as st
 from PIL import Image
 
-from color_space import make_color_figure
+from color_space import analyze
 
 
 st.set_page_config(page_title="色の3D空間プロット", page_icon="🧊", layout="wide")
 
 
 @st.cache_data(show_spinner=False)
-def _figure(
+def _analyze(
     file_bytes: bytes, k: int, max_points: int, seed: int, lab_space: bool,
     ab_scale: float, chroma_gamma: float,
 ):
-    return make_color_figure(
+    res = analyze(
         Image.open(io.BytesIO(file_bytes)),
         k=k,
         max_points=max_points,
@@ -35,6 +35,23 @@ def _figure(
         ab_scale=ab_scale,
         chroma_gamma=chroma_gamma,
     )
+    # dataclass はキャッシュしやすいよう素の値に分解して返す
+    return res.figure, res.centers, res.proportions
+
+
+def swatches_html(centers, proportions) -> str:
+    """代表色（medoid）を正方形で横に並べる HTML を作る."""
+    cells = ""
+    for rgb, prop in zip(centers, proportions):
+        r, g, b = (max(0, min(255, int(round(v)))) for v in rgb)
+        hexv = f"#{r:02X}{g:02X}{b:02X}"
+        cells += (
+            '<div style="text-align:center;font-family:monospace;font-size:0.72rem;">'
+            f'<div style="width:64px;height:64px;background:{hexv};'
+            'border:1px solid #bbb;border-radius:6px;"></div>'
+            f"{hexv}<br>{prop*100:.1f}%</div>"
+        )
+    return f'<div style="display:flex;flex-wrap:wrap;gap:10px;">{cells}</div>'
 
 
 def main() -> None:
@@ -91,11 +108,13 @@ def main() -> None:
         col_img.image(Image.open(io.BytesIO(data)), caption="入力画像", use_container_width=True)
         try:
             with st.spinner(f"{file.name} の色分布を計算中..."):
-                fig = _figure(
+                fig, centers, proportions = _analyze(
                     data, int(k), int(max_points), int(seed), lab_space,
                     float(ab_scale), float(chroma_gamma),
                 )
             st.plotly_chart(fig, use_container_width=True)
+            st.subheader(f"代表色のカラーパレット（k = {len(centers)}）")
+            st.markdown(swatches_html(centers, proportions), unsafe_allow_html=True)
         except Exception as e:  # noqa: BLE001 - 1 件失敗しても続行
             st.error(f"{file.name} の処理に失敗しました: {e}")
 
