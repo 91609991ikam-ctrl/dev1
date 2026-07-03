@@ -76,19 +76,14 @@ def main() -> None:
             help="メインアプリと同じ設定。OFF で RGB 距離。",
         )
 
-        st.subheader("鮮やかさの研究レバー")
-        ab_scale = st.slider(
-            "α: 彩度方向の強調（分離）",
-            min_value=1.0, max_value=4.0, value=1.0, step=0.25,
-            help="a*,b* 軸を α 倍。鮮やかな色が自前のクラスタに分離されやすくなる"
-            "（割合は正直）。1.0 で無効。",
+        tip_weight = st.toggle(
+            "先端寄せ（彩度重み γ=2）",
+            value=True,
+            help="ON: 画素を彩度 C² で重み付けし、代表色を高彩度側（分布の先端）へ寄せる。"
+            "k が小さいほど効きます。OFF で通常の medoid。",
         )
-        chroma_gamma = st.slider(
-            "γ: 彩度重み（先端寄せ）",
-            min_value=0.0, max_value=3.0, value=0.0, step=0.25,
-            help="画素を彩度 C^γ で重み付けし代表色を高彩度側へ寄せる"
-            "（見た目は鮮やか、割合は水増しに注意）。0 で無効。",
-        )
+        ab_scale = 1.0  # 分離レバーは UI から外した（コード側は残置）
+        chroma_gamma = 2.0 if tip_weight else 0.0
         seed = st.number_input("乱数シード", min_value=0, max_value=9999, value=42)
 
     uploaded = st.file_uploader(
