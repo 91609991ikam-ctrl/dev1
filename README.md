@@ -63,7 +63,23 @@ streamlit run app.py
 | `color_naming.py` | 色の近似ロジック（基本色名のアンカー・sRGB→CIELAB 変換・ΔEで最近傍色名）。アンカー色は表を編集するだけで調整可能。 |
 | `color_palette.py` | コアロジック（クラスタリング・基本色名への集約・割合算出・アクセント定義・最小 k 探索）。UI 非依存で再利用可能。 |
 | `app.py` | Streamlit の Web UI（横棒グラフ＋丸の凡例）。 |
+| `color_space.py` | 診断用: 画像の色を RGB / CIELAB の 3D 散布図にする（medoid 重ね・色切替）。CLI とコード両対応。 |
+| `color_space_app.py` | 診断用の別 Streamlit アプリ。画像をアップして色分布を 3D で回転・観察できる（メインの `app.py` とは独立）。 |
 | `requirements.txt` | 依存ライブラリ。 |
+
+## 診断ツール: 色の 3D 空間プロット
+
+「なぜ色がくすむのか」を直接見るための、メインアプリから独立した可視化ツール。
+
+```bash
+streamlit run color_space_app.py          # ブラウザで回転・観察
+# または CLI で HTML 書き出し:
+python color_space.py 画像.png --k 16 --out plot.html
+```
+
+各画素をその色で点描し、k-medoids の代表色（◆）を重ねる。ボタンで点の色を
+「実際の色 / 割り当て代表色」に切り替えると、量子化で鮮やかな色がどの代表色に
+潰れているか（くすみの原因）が空間的に分かる。
 
 ## コアロジックの利用例（スクリプトから）
 
