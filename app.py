@@ -31,7 +31,12 @@ from color_palette import (
     find_min_accent_k,
     load_pixels,
 )
-from segmentation import METHOD_FELZENSZWALB, METHOD_SLIC, segment
+from segmentation import (
+    METHOD_FELZENSZWALB,
+    METHOD_QUICKSHIFT,
+    METHOD_SLIC,
+    segment,
+)
 
 
 st.set_page_config(page_title="カラーパレット抽出", page_icon="🎨", layout="wide")
@@ -127,13 +132,18 @@ def _png_bytes(image: Image.Image) -> bytes:
 
 
 @st.cache_data(show_spinner=False)
-def segment_image(file_bytes: bytes, method: str, n_segments: int, scale: float):
+def segment_image(
+    file_bytes: bytes, method: str, n_segments: int, compactness: float,
+    scale: float, max_dist: float,
+):
     """領域分割し、平均色マップ・境界オーバーレイ・領域数を返す（キャッシュ対象）."""
     seg = segment(
         Image.open(io.BytesIO(file_bytes)),
         method=method,
         n_segments=n_segments,
+        compactness=compactness,
         scale=scale,
+        max_dist=max_dist,
     )
     return seg.mean_color_image, seg.boundary_overlay, seg.n_regions
 
@@ -269,16 +279,40 @@ def main() -> None:
         )
         seg_method_label = st.radio(
             "分割手法",
-            options=["SLIC（粒度指定）", "Felzenszwalb（自動）"],
+            options=[
+                "Quickshift（内容密着・推奨）",
+                "SLIC（格子・高速）",
+                "Felzenszwalb（グラフ）",
+            ],
             index=0,
             disabled=not seg_on,
+            help="Quickshift は色の境界に密着し小領域を保持（やや遅い）。"
+            "SLIC は高速だが compactness を下げないと格子っぽい。",
         )
-        seg_method = METHOD_SLIC if seg_method_label.startswith("SLIC") else METHOD_FELZENSZWALB
+        if seg_method_label.startswith("SLIC"):
+            seg_method = METHOD_SLIC
+        elif seg_method_label.startswith("Felzenszwalb"):
+            seg_method = METHOD_FELZENSZWALB
+        else:
+            seg_method = METHOD_QUICKSHIFT
+
+        seg_max_dist = st.slider(
+            "Quickshift: 粒度 (max_dist)",
+            min_value=4.0, max_value=24.0, value=10.0, step=1.0,
+            disabled=(not seg_on) or seg_method != METHOD_QUICKSHIFT,
+            help="小さいほど細かく（小さな色を保持）、大きいほど大まかに。",
+        )
         seg_n_segments = st.slider(
             "SLIC: 領域数の目安",
-            min_value=50, max_value=2000, value=400, step=50,
+            min_value=50, max_value=2000, value=500, step=50,
             disabled=(not seg_on) or seg_method != METHOD_SLIC,
-            help="大きいほど細かく分割（小さな色も残る）。小さいほど大まかに均す。",
+            help="大きいほど細かく分割（小さな色も残る）。",
+        )
+        seg_compactness = st.slider(
+            "SLIC: compactness（小さいほど色に沿う）",
+            min_value=1.0, max_value=20.0, value=5.0, step=1.0,
+            disabled=(not seg_on) or seg_method != METHOD_SLIC,
+            help="小さいほど色の境界に沿い、大きいほど格子状に整います。",
         )
         seg_scale = st.slider(
             "Felzenszwalb: scale",
@@ -375,7 +409,8 @@ def main() -> None:
                 analysis_bytes = data
                 if seg_on:
                     mean_img, overlay_img, n_regions = segment_image(
-                        data, seg_method, int(seg_n_segments), float(seg_scale)
+                        data, seg_method, int(seg_n_segments),
+                        float(seg_compactness), float(seg_scale), float(seg_max_dist),
                     )
                     seg = (mean_img, overlay_img, n_regions)
                     analysis_bytes = _png_bytes(mean_img)

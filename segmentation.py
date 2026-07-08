@@ -18,9 +18,10 @@ from dataclasses import dataclass
 import numpy as np
 from PIL import Image
 from skimage.color import label2rgb
-from skimage.segmentation import felzenszwalb, mark_boundaries, slic
+from skimage.segmentation import felzenszwalb, mark_boundaries, quickshift, slic
 
 METHOD_SLIC = "slic"
+METHOD_QUICKSHIFT = "quickshift"
 METHOD_FELZENSZWALB = "felzenszwalb"
 
 
@@ -46,18 +47,33 @@ def segment(
     image: Image.Image,
     method: str = METHOD_SLIC,
     n_segments: int = 400,
-    compactness: float = 10.0,
+    compactness: float = 5.0,
     scale: float = 200.0,
     sigma: float = 0.8,
     min_size: int = 50,
+    max_dist: float = 10.0,
+    kernel_size: float = 5.0,
+    ratio: float = 0.8,
     max_side: int = 900,
 ) -> SegmentationResult:
-    """画像を領域分割し、確認用の画像もまとめて返す."""
-    rgb = _resized(image, max_side)
+    """画像を領域分割し、確認用の画像もまとめて返す.
+
+    method:
+      - slic:         格子ベース。compactness を下げるほど色の境界に沿う。
+      - quickshift:   モード探索。内容に密着し小領域を保持しやすい（やや遅い）。
+      - felzenszwalb: グラフベース。scale で粒度調整。
+    """
+    # quickshift は重いので入力をやや小さめにする
+    side = 640 if method == METHOD_QUICKSHIFT else max_side
+    rgb = _resized(image, side)
     arr = np.asarray(rgb)
 
     if method == METHOD_FELZENSZWALB:
         labels = felzenszwalb(arr, scale=scale, sigma=sigma, min_size=min_size)
+    elif method == METHOD_QUICKSHIFT:
+        labels = quickshift(
+            arr, ratio=ratio, kernel_size=kernel_size, max_dist=max_dist, sigma=0
+        )
     else:
         labels = slic(arr, n_segments=n_segments, compactness=compactness, start_label=0)
 
