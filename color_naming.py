@@ -98,3 +98,29 @@ def nearest_real_pixel(target_rgb: np.ndarray, candidate_pixels: np.ndarray) -> 
     dist = np.linalg.norm(cand_lab - target_lab, axis=1)
     idx = int(np.argmin(dist))
     return np.asarray(candidate_pixels[idx], dtype=np.float64)
+
+
+# --- 人間の色名データ（XKCD）による分類 -----------------------------------
+# color_names_data は build 時に生成した実行時軽量データ（matplotlib 非依存）。
+from color_names_data import RGB as _CN_RGB, TERM as _CN_TERM  # noqa: E402
+
+_CN_LAB = srgb_to_lab(np.array(_CN_RGB, dtype=np.float64))
+_CN_TERM = np.array(_CN_TERM, dtype=int)
+
+
+def classify_basic_index(rgb: np.ndarray, k_neighbors: int = 7) -> np.ndarray:
+    """人間の色名データの k 近傍多数決で基本色名インデックスを返す（ΔE76）.
+
+    無彩色⇔有彩色の境界を人の色名分布から決めるため、暗い/くすんだ有彩色が
+    無彩色に誤判定されにくい。入力 (N,3) -> 出力 (N,).
+    """
+    lab = srgb_to_lab(np.asarray(rgb, dtype=np.float64).reshape(-1, 3))
+    kk = min(k_neighbors, _CN_LAB.shape[0])
+    dist = np.linalg.norm(lab[:, None, :] - _CN_LAB[None, :, :], axis=2)  # (N, M)
+    idx = np.argpartition(dist, kk - 1, axis=1)[:, :kk]  # (N, kk)
+    neigh = _CN_TERM[idx]
+    out = np.empty(len(lab), dtype=int)
+    for i in range(len(lab)):
+        vals, cnts = np.unique(neigh[i], return_counts=True)
+        out[i] = int(vals[int(cnts.argmax())])
+    return out

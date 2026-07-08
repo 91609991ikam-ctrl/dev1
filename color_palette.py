@@ -25,10 +25,23 @@ from clustering import KMedoidsLite
 from color_naming import (
     ACHROMATIC_NAMES_JA,
     BASIC_NAMES_JA,
+    classify_basic_index,
     nearest_basic_index,
     nearest_real_pixel,
     srgb_to_lab,
 )
+
+# 色名の判定方式
+NAMING_KNN = "knn"  # 人間の色名データ（XKCD）の k 近傍多数決
+NAMING_ANCHOR = "anchor"  # 基本色アンカーへの最近傍（旧方式）
+DEFAULT_NAMING = NAMING_KNN
+
+
+def _name_indices(centers: np.ndarray, naming: str) -> np.ndarray:
+    """代表色を基本色名インデックスに変換（方式で切替）."""
+    if naming == NAMING_ANCHOR:
+        return nearest_basic_index(centers)
+    return classify_basic_index(centers)
 
 
 # クラスタリングの再現性を保つための既定シード
@@ -130,6 +143,7 @@ def make_palette(
     exclude_achromatic: bool = True,
     lab_space: bool = True,
     contrast_min: float = 0.0,
+    naming: str = DEFAULT_NAMING,
 ) -> Palette:
     """ピクセル配列を k クラスタにクラスタリングしてパレットを作る.
 
@@ -172,8 +186,8 @@ def make_palette(
         for i in range(k):
             entries.append(_entry(float(proportions[i]), _to_rgb_tuple(centers[i])))
     else:
-        # 各クラスタ中心を最も近い基本色名に対応づけ
-        cluster_basic = nearest_basic_index(centers)  # shape (k,)
+        # 各クラスタ中心を基本色名に対応づけ（方式で切替）
+        cluster_basic = _name_indices(centers, naming)  # shape (k,)
         for b_idx in np.unique(cluster_basic):
             member_clusters = np.where(cluster_basic == b_idx)[0]
             group_count = counts[member_clusters].sum()
@@ -220,6 +234,7 @@ def cluster_and_quantize(
     max_display_pixels: int = 480_000,
     lab_space: bool = True,
     chroma_gamma: float = 0.0,
+    naming: str = DEFAULT_NAMING,
 ) -> ClusteredImage:
     """k クラスタでクラスタリングし、「量子化画像」と「生の k 色パレット」を返す.
 
@@ -256,7 +271,7 @@ def cluster_and_quantize(
     quant_img = Image.fromarray(np.clip(np.round(quant), 0, 255).astype(np.uint8))
 
     # --- 生の k 色パレット（集約しない）---
-    cluster_basic = nearest_basic_index(centers)
+    cluster_basic = _name_indices(centers, naming)
     entries: list[ColorEntry] = []
     for i in range(k):
         if counts[i] == 0:
@@ -285,6 +300,7 @@ def find_min_accent_k(
     exclude_achromatic: bool = True,
     lab_space: bool = True,
     contrast_min: float = 0.0,
+    naming: str = DEFAULT_NAMING,
 ) -> SearchResult:
     """アクセントカラーが抽出できる最小クラスタ数を二分探索で探す.
 
@@ -304,7 +320,7 @@ def find_min_accent_k(
         if k not in palettes:
             palettes[k] = make_palette(
                 pixels, k, accent_low, accent_high, seed, aggregate,
-                exclude_achromatic, lab_space, contrast_min,
+                exclude_achromatic, lab_space, contrast_min, naming,
             )
         has = palettes[k].has_accent
         trace.append((k, has))
@@ -313,7 +329,7 @@ def find_min_accent_k(
     # 初期クラスタ数 k_max でアクセントカラーを定義・確認
     base_palette = make_palette(
         pixels, k_max, accent_low, accent_high, seed, aggregate,
-        exclude_achromatic, lab_space, contrast_min,
+        exclude_achromatic, lab_space, contrast_min, naming,
     )
     palettes[k_max] = base_palette
 

@@ -26,6 +26,8 @@ from color_palette import (
     DEFAULT_K_MAX,
     DEFAULT_K_MIN,
     DEFAULT_SEED,
+    NAMING_ANCHOR,
+    NAMING_KNN,
     Palette,
     cluster_and_quantize,
     find_min_accent_k,
@@ -162,6 +164,7 @@ def analyze_image(
     lab_space: bool,
     contrast_min: float,
     chroma_gamma: float,
+    naming: str,
 ) -> dict:
     """1 枚の画像を解析し、表示に必要な結果をまとめて返す（キャッシュ対象）."""
     image = Image.open(io.BytesIO(file_bytes))
@@ -177,6 +180,7 @@ def analyze_image(
         exclude_achromatic=exclude_achromatic,
         lab_space=lab_space,
         contrast_min=contrast_min,
+        naming=naming,
     )
     no_accent = result.min_k is None
     disp_k = result.base_palette.k if no_accent else result.min_k
@@ -190,6 +194,7 @@ def analyze_image(
         max_fit_pixels=max_pixels,
         lab_space=lab_space,
         chroma_gamma=chroma_gamma,
+        naming=naming,
     )
     return {
         "min_k": result.min_k,
@@ -341,6 +346,15 @@ def main() -> None:
         )
         chroma_gamma = 2.0 if tip_weight else 0.0
 
+        st.subheader("色名の判定")
+        naming_knn = st.toggle(
+            "人間の色名データで判定（XKCD・推奨）",
+            value=True,
+            help="ON: 人が付けた色名の分布(k近傍)で基本色名を判定。暗い/くすんだ有彩色が"
+            "無彩色に誤判定されにくい。OFF: 基本色アンカーへの最近傍（旧方式）。",
+        )
+        naming = NAMING_KNN if naming_knn else NAMING_ANCHOR
+
         st.subheader("アクセントカラーの範囲")
         accent_range = st.slider(
             "割合の下限〜上限 (%)",
@@ -454,6 +468,7 @@ def main() -> None:
                     lab_space,
                     float(contrast_min),
                     float(chroma_gamma),
+                    naming,
                 )
         except Exception as e:  # noqa: BLE001 - 1 件失敗しても残りは続行
             st.error(f"{file.name} の処理に失敗しました: {e}")
