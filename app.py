@@ -31,6 +31,7 @@ from color_palette import (
     find_min_accent_k,
     load_pixels,
 )
+from segmentation import METHOD_FELZENSZWALB, METHOD_SLIC, segment
 
 
 st.set_page_config(page_title="カラーパレット抽出", page_icon="🎨", layout="wide")
@@ -119,6 +120,24 @@ def palette_table(palette: Palette) -> list[dict]:
     return rows
 
 
+def _png_bytes(image: Image.Image) -> bytes:
+    buf = io.BytesIO()
+    image.convert("RGB").save(buf, format="PNG")
+    return buf.getvalue()
+
+
+@st.cache_data(show_spinner=False)
+def segment_image(file_bytes: bytes, method: str, n_segments: int, scale: float):
+    """領域分割し、平均色マップ・境界オーバーレイ・領域数を返す（キャッシュ対象）."""
+    seg = segment(
+        Image.open(io.BytesIO(file_bytes)),
+        method=method,
+        n_segments=n_segments,
+        scale=scale,
+    )
+    return seg.mean_color_image, seg.boundary_overlay, seg.n_regions
+
+
 @st.cache_data(show_spinner=False)
 def analyze_image(
     file_bytes: bytes,
@@ -170,11 +189,22 @@ def analyze_image(
     }
 
 
-def render_result(image: Image.Image, res: dict, accent_low: float, accent_high: float) -> None:
-    """1 枚分の結果（入力画像・減色画像・パレット）を描画する."""
+def render_result(
+    image: Image.Image, res: dict, accent_low: float, accent_high: float, seg=None
+) -> None:
+    """1 枚分の結果（入力画像・領域分割・減色画像・パレット）を描画する."""
     img_col, _ = st.columns([2, 1])
     img_col.subheader("入力画像")
     img_col.image(image, use_container_width=True)
+
+    # 領域分割の確認ビュー（境界オーバーレイ ＋ 領域平均色マップ）
+    if seg is not None:
+        mean_img, overlay_img, n_regions = seg
+        img_col.subheader(f"領域分割（境界／{n_regions} 領域）")
+        img_col.image(overlay_img, use_container_width=True)
+        img_col.subheader("領域の平均色マップ（＝色分析の入力）")
+        img_col.image(mean_img, use_container_width=True)
+
     img_col.subheader(f"クラスタリング後の画像（k = {res['disp_k']}）")
     img_col.image(res["quant"], use_container_width=True)
 
@@ -229,6 +259,33 @@ def main() -> None:
     # ---- サイドバー：パラメータ ----
     with st.sidebar:
         st.header("⚙️ パラメータ")
+
+        st.subheader("領域分割（前段）")
+        seg_on = st.toggle(
+            "領域分割を前段に使う",
+            value=True,
+            help="ON: 先にスーパーピクセルで小領域にまとめ、領域平均色を色分析に使う。"
+            "小さな鮮やか領域を面として拾い、にじみノイズを均します。",
+        )
+        seg_method_label = st.radio(
+            "分割手法",
+            options=["SLIC（粒度指定）", "Felzenszwalb（自動）"],
+            index=0,
+            disabled=not seg_on,
+        )
+        seg_method = METHOD_SLIC if seg_method_label.startswith("SLIC") else METHOD_FELZENSZWALB
+        seg_n_segments = st.slider(
+            "SLIC: 領域数の目安",
+            min_value=50, max_value=2000, value=400, step=50,
+            disabled=(not seg_on) or seg_method != METHOD_SLIC,
+            help="大きいほど細かく分割（小さな色も残る）。小さいほど大まかに均す。",
+        )
+        seg_scale = st.slider(
+            "Felzenszwalb: scale",
+            min_value=50.0, max_value=600.0, value=200.0, step=25.0,
+            disabled=(not seg_on) or seg_method != METHOD_FELZENSZWALB,
+            help="大きいほど大まかな領域になります。",
+        )
 
         st.subheader("クラスタリング")
         st.caption("手法: k-medoids（代表色に実在画素を使い色のくすみを避ける）")
@@ -312,8 +369,19 @@ def main() -> None:
         st.header(f"📄 {file.name}")
         try:
             with st.spinner(f"{file.name} を解析中..."):
+                image = Image.open(io.BytesIO(data))
+                # 前段: 領域分割（ON なら領域平均色マップを色分析の入力にする）
+                seg = None
+                analysis_bytes = data
+                if seg_on:
+                    mean_img, overlay_img, n_regions = segment_image(
+                        data, seg_method, int(seg_n_segments), float(seg_scale)
+                    )
+                    seg = (mean_img, overlay_img, n_regions)
+                    analysis_bytes = _png_bytes(mean_img)
+
                 res = analyze_image(
-                    data,
+                    analysis_bytes,
                     int(max_pixels),
                     int(k_min),
                     int(k_max),
@@ -324,12 +392,11 @@ def main() -> None:
                     exclude_achromatic,
                     lab_space,
                 )
-                image = Image.open(io.BytesIO(data))
         except Exception as e:  # noqa: BLE001 - 1 件失敗しても残りは続行
             st.error(f"{file.name} の処理に失敗しました: {e}")
             continue
 
-        render_result(image, res, accent_low, accent_high)
+        render_result(image, res, accent_low, accent_high, seg=seg)
 
         if i < len(uploaded) - 1:
             st.divider()
