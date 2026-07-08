@@ -27,6 +27,7 @@ from color_naming import (
     BASIC_NAMES_JA,
     nearest_basic_index,
     nearest_real_pixel,
+    srgb_to_lab,
 )
 
 
@@ -128,6 +129,7 @@ def make_palette(
     aggregate: bool = True,
     exclude_achromatic: bool = True,
     lab_space: bool = True,
+    contrast_min: float = 0.0,
 ) -> Palette:
     """ピクセル配列を k クラスタにクラスタリングしてパレットを作る.
 
@@ -190,6 +192,20 @@ def make_palette(
 
             entries.append(_entry(prop, _to_rgb_tuple(swatch), BASIC_NAMES_JA[b_idx]))
 
+    # コントラスト・ゲート: アクセントは「主要色から ΔE で際立つ色」だけに絞る。
+    # 主要色 = アクセント帯より割合が大きい色（無ければ最大の色）。
+    if contrast_min > 0 and entries:
+        dominant = [e for e in entries if e.proportion > accent_high]
+        if not dominant:
+            dominant = [max(entries, key=lambda e: e.proportion)]
+        dom_lab = srgb_to_lab(np.array([e.rgb for e in dominant], dtype=np.float64))
+        for e in entries:
+            if not e.is_accent:
+                continue
+            e_lab = srgb_to_lab(np.array([e.rgb], dtype=np.float64))[0]
+            if float(np.linalg.norm(dom_lab - e_lab, axis=1).min()) < contrast_min:
+                e.is_accent = False
+
     # 割合の降順に並べ替え（多い順）
     entries.sort(key=lambda c: c.proportion, reverse=True)
     return Palette(k=k, colors=entries)
@@ -203,6 +219,7 @@ def cluster_and_quantize(
     max_fit_pixels: int = 100_000,
     max_display_pixels: int = 480_000,
     lab_space: bool = True,
+    chroma_gamma: float = 0.0,
 ) -> ClusteredImage:
     """k クラスタでクラスタリングし、「量子化画像」と「生の k 色パレット」を返す.
 
@@ -216,7 +233,9 @@ def cluster_and_quantize(
     fit_pixels = load_pixels(image, max_pixels=max_fit_pixels)
     k = max(1, min(k, len(fit_pixels)))
 
-    km = KMedoidsLite(n_clusters=k, random_state=seed, lab_space=lab_space)
+    km = KMedoidsLite(
+        n_clusters=k, random_state=seed, lab_space=lab_space, chroma_gamma=chroma_gamma
+    )
     km.fit(fit_pixels)
     centers = km.cluster_centers_
 
@@ -265,6 +284,7 @@ def find_min_accent_k(
     aggregate: bool = True,
     exclude_achromatic: bool = True,
     lab_space: bool = True,
+    contrast_min: float = 0.0,
 ) -> SearchResult:
     """アクセントカラーが抽出できる最小クラスタ数を二分探索で探す.
 
@@ -284,7 +304,7 @@ def find_min_accent_k(
         if k not in palettes:
             palettes[k] = make_palette(
                 pixels, k, accent_low, accent_high, seed, aggregate,
-                exclude_achromatic, lab_space,
+                exclude_achromatic, lab_space, contrast_min,
             )
         has = palettes[k].has_accent
         trace.append((k, has))
@@ -293,7 +313,7 @@ def find_min_accent_k(
     # 初期クラスタ数 k_max でアクセントカラーを定義・確認
     base_palette = make_palette(
         pixels, k_max, accent_low, accent_high, seed, aggregate,
-        exclude_achromatic, lab_space,
+        exclude_achromatic, lab_space, contrast_min,
     )
     palettes[k_max] = base_palette
 

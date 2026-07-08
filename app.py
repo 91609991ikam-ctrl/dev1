@@ -160,6 +160,8 @@ def analyze_image(
     aggregate: bool,
     exclude_achromatic: bool,
     lab_space: bool,
+    contrast_min: float,
+    chroma_gamma: float,
 ) -> dict:
     """1 枚の画像を解析し、表示に必要な結果をまとめて返す（キャッシュ対象）."""
     image = Image.open(io.BytesIO(file_bytes))
@@ -174,6 +176,7 @@ def analyze_image(
         aggregate=aggregate,
         exclude_achromatic=exclude_achromatic,
         lab_space=lab_space,
+        contrast_min=contrast_min,
     )
     no_accent = result.min_k is None
     disp_k = result.base_palette.k if no_accent else result.min_k
@@ -186,6 +189,7 @@ def analyze_image(
         seed=seed,
         max_fit_pixels=max_pixels,
         lab_space=lab_space,
+        chroma_gamma=chroma_gamma,
     )
     return {
         "min_k": result.min_k,
@@ -329,6 +333,13 @@ def main() -> None:
             help="ON: 距離を CIELAB(ΔE) で計算し知覚的に分割（赤と背景が分かれやすい）。"
             "OFF: RGB 距離。",
         )
+        tip_weight = st.toggle(
+            "先端寄せ（彩度重み γ=2）",
+            value=True,
+            help="ON: 表示する代表色を彩度 C² 重みで高彩度側に寄せ、くすみを抑える"
+            "（表示のみ。割合/アクセント判定は medoid のまま）。",
+        )
+        chroma_gamma = 2.0 if tip_weight else 0.0
 
         st.subheader("アクセントカラーの範囲")
         accent_range = st.slider(
@@ -355,6 +366,21 @@ def main() -> None:
             help="ON: 白・灰・黒はアクセントカラーの対象外にします。"
             "OFF: 無彩色もアクセントになりえます。",
         )
+
+        contrast_on = st.toggle(
+            "主要色から際立つ色のみアクセント（コントラスト）",
+            value=True,
+            help="ON: 割合が小さいだけでなく、主要色から色差 ΔE で十分離れた色だけを"
+            "アクセントとします（隣接色相を弾く）。",
+        )
+        contrast_min = st.slider(
+            "コントラスト閾値 ΔE",
+            min_value=0.0, max_value=80.0, value=25.0, step=5.0,
+            disabled=not contrast_on,
+            help="大きいほど『主要色と大きく違う色』だけをアクセントに。"
+            "参考: 赤-橙≈41, 赤-青≈127。",
+        )
+        contrast_min = contrast_min if contrast_on else 0.0
 
         st.subheader("クラスタ数の探索範囲")
         k_max = st.number_input(
@@ -426,6 +452,8 @@ def main() -> None:
                     aggregate,
                     exclude_achromatic,
                     lab_space,
+                    float(contrast_min),
+                    float(chroma_gamma),
                 )
         except Exception as e:  # noqa: BLE001 - 1 件失敗しても残りは続行
             st.error(f"{file.name} の処理に失敗しました: {e}")
