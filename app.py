@@ -307,9 +307,10 @@ def main() -> None:
 
         seg_max_dist = st.slider(
             "Quickshift: 粒度 (max_dist)",
-            min_value=4.0, max_value=24.0, value=10.0, step=1.0,
+            min_value=4.0, max_value=300.0, value=250.0, step=2.0,
             disabled=(not seg_on) or seg_method != METHOD_QUICKSHIFT,
-            help="小さいほど細かく（小さな色を保持）、大きいほど大まかに。",
+            help="小さいほど細かく（小さな色を保持）、大きいほど大まかに。"
+            "大きくしても領域数は頭打ちします。",
         )
         seg_n_segments = st.slider(
             "SLIC: 領域数の目安",
