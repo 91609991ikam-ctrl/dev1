@@ -75,15 +75,20 @@ def srgb_to_lab(rgb: np.ndarray) -> np.ndarray:
 _ANCHOR_LAB = srgb_to_lab(_ANCHOR_RGB)
 
 
+def nearest_basic_index_lab(lab: np.ndarray) -> np.ndarray:
+    """Lab から最も近い基本色名アンカーのインデックスを返す（ΔE76）."""
+    lab = np.asarray(lab, dtype=np.float64).reshape(-1, 3)
+    dist = np.linalg.norm(lab[:, None, :] - _ANCHOR_LAB[None, :, :], axis=2)
+    return np.argmin(dist, axis=1)
+
+
 def nearest_basic_index(rgb: np.ndarray) -> np.ndarray:
     """各色に最も近い基本色名のインデックスを返す（ΔE76）.
 
     入力 shape (N, 3) -> 出力 shape (N,)。
     """
     lab = srgb_to_lab(np.asarray(rgb, dtype=np.float64).reshape(-1, 3))
-    # 各色 × 各アンカー の Lab 距離
-    dist = np.linalg.norm(lab[:, None, :] - _ANCHOR_LAB[None, :, :], axis=2)
-    return np.argmin(dist, axis=1)
+    return nearest_basic_index_lab(lab)
 
 
 def nearest_real_pixel(target_rgb: np.ndarray, candidate_pixels: np.ndarray) -> np.ndarray:
@@ -107,20 +112,64 @@ from color_names_data import RGB as _CN_RGB, TERM as _CN_TERM  # noqa: E402
 _CN_LAB = srgb_to_lab(np.array(_CN_RGB, dtype=np.float64))
 _CN_TERM = np.array(_CN_TERM, dtype=int)
 
+# 有彩色の参照点だけ（白・灰・黒を除く）。淡色でも色相名を付けるために使う。
+_IW = BASIC_NAMES_JA.index("白")
+_IG = BASIC_NAMES_JA.index("灰")
+_IB = BASIC_NAMES_JA.index("黒")
+_CHROMATIC_MASK = ~np.isin(_CN_TERM, [_IW, _IG, _IB])
+_CN_LAB_CH = _CN_LAB[_CHROMATIC_MASK]
+_CN_TERM_CH = _CN_TERM[_CHROMATIC_MASK]
 
-def classify_basic_index(rgb: np.ndarray, k_neighbors: int = 7) -> np.ndarray:
-    """人間の色名データの k 近傍多数決で基本色名インデックスを返す（ΔE76）.
+# 無彩色とみなす彩度フロア（C*）。これ未満は明度で 白/灰/黒 に振り分ける。
+NEUTRAL_CHROMA_FLOOR = 6.0
 
-    無彩色⇔有彩色の境界を人の色名分布から決めるため、暗い/くすんだ有彩色が
-    無彩色に誤判定されにくい。入力 (N,3) -> 出力 (N,).
-    """
-    lab = srgb_to_lab(np.asarray(rgb, dtype=np.float64).reshape(-1, 3))
-    kk = min(k_neighbors, _CN_LAB.shape[0])
-    dist = np.linalg.norm(lab[:, None, :] - _CN_LAB[None, :, :], axis=2)  # (N, M)
-    idx = np.argpartition(dist, kk - 1, axis=1)[:, :kk]  # (N, kk)
-    neigh = _CN_TERM[idx]
+
+def _lab_chroma(lab: np.ndarray) -> np.ndarray:
+    """Lab 配列 (...,3) の彩度 C=√(a²+b²) を返す."""
+    return np.sqrt(lab[..., 1] ** 2 + lab[..., 2] ** 2)
+
+
+def _achromatic_by_lightness(L: np.ndarray) -> np.ndarray:
+    """無彩色（低彩度）を明度 L* で 白/灰/黒 に振り分ける."""
+    out = np.full(L.shape, _IG, dtype=int)
+    out[L >= 78] = _IW
+    out[L <= 28] = _IB
+    return out
+
+
+def _knn_vote(lab: np.ndarray, ref_lab: np.ndarray, ref_term: np.ndarray, kk: int) -> np.ndarray:
+    kk = min(kk, ref_lab.shape[0])
+    dist = np.linalg.norm(lab[:, None, :] - ref_lab[None, :, :], axis=2)
+    idx = np.argpartition(dist, kk - 1, axis=1)[:, :kk]
+    neigh = ref_term[idx]
     out = np.empty(len(lab), dtype=int)
     for i in range(len(lab)):
         vals, cnts = np.unique(neigh[i], return_counts=True)
         out[i] = int(vals[int(cnts.argmax())])
     return out
+
+
+def classify_basic_index_lab(
+    lab: np.ndarray, k_neighbors: int = 7, chroma_floor: float = NEUTRAL_CHROMA_FLOOR
+) -> np.ndarray:
+    """Lab から基本色名インデックスを返す（淡色対応の2段階）.
+
+    - 彩度 C* < chroma_floor → 無彩色とみなし明度で 白/灰/黒
+    - それ以外 → 有彩色の参照点だけで k 近傍投票（淡くても色相名が付く）
+    入力 (N,3) Lab -> 出力 (N,).
+    """
+    lab = np.asarray(lab, dtype=np.float64).reshape(-1, 3)
+    chroma = _lab_chroma(lab)
+    out = np.empty(len(lab), dtype=int)
+    achrom = chroma < chroma_floor
+    if achrom.any():
+        out[achrom] = _achromatic_by_lightness(lab[achrom, 0])
+    if (~achrom).any():
+        out[~achrom] = _knn_vote(lab[~achrom], _CN_LAB_CH, _CN_TERM_CH, k_neighbors)
+    return out
+
+
+def classify_basic_index(rgb: np.ndarray, k_neighbors: int = 7) -> np.ndarray:
+    """RGB から基本色名インデックスを返す（淡色対応）. 入力 (N,3) -> 出力 (N,)."""
+    lab = srgb_to_lab(np.asarray(rgb, dtype=np.float64).reshape(-1, 3))
+    return classify_basic_index_lab(lab, k_neighbors=k_neighbors)

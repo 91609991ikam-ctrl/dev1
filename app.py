@@ -25,6 +25,9 @@ from color_palette import (
     DEFAULT_ACCENT_LOW,
     DEFAULT_K_MAX,
     DEFAULT_SEED,
+    ACCENT_ABSOLUTE,
+    ACCENT_NORMALIZE,
+    ACCENT_RELATIVE,
     NAMING_ANCHOR,
     NAMING_KNN,
     Palette,
@@ -163,6 +166,7 @@ def analyze_image(
     contrast_min: float,
     chroma_gamma: float,
     naming: str,
+    accent_mode: str,
 ) -> dict:
     """1 枚の画像を、固定クラスタ数 k で解析して結果を返す（キャッシュ対象）."""
     image = Image.open(io.BytesIO(file_bytes))
@@ -171,7 +175,7 @@ def analyze_image(
     # 固定 k で集約パレットを作りアクセントを判定（最小 k 探索はしない）
     agg_palette = make_palette(
         pixels, k, accent_low, accent_high, seed, aggregate,
-        exclude_achromatic, lab_space, contrast_min, naming,
+        exclude_achromatic, lab_space, contrast_min, naming, accent_mode,
     )
     accent_names = {c.name for c in agg_palette.accent_colors}
     clustered = cluster_and_quantize(
@@ -183,6 +187,7 @@ def analyze_image(
         lab_space=lab_space,
         chroma_gamma=chroma_gamma,
         naming=naming,
+        accent_mode=accent_mode,
     )
     return {
         "k": k,
@@ -353,16 +358,35 @@ def main() -> None:
             "OFF: 無彩色もアクセントになりえます。",
         )
 
+        accent_mode_label = st.radio(
+            "アクセント判定モード",
+            options=[
+                "絶対（現行・コントラスト）",
+                "① 相対（画像内で際立つ色）",
+                "② 正規化（彩度を引き伸ばして判定）",
+            ],
+            index=0,
+            help="淡い画像で薄い色を拾いたいときは ① か ②。"
+            "① は画像全体の彩度に対する外れ値で判定、② は彩度を画像ごとに引き伸ばして判定。",
+        )
+        if accent_mode_label.startswith("①"):
+            accent_mode = ACCENT_RELATIVE
+        elif accent_mode_label.startswith("②"):
+            accent_mode = ACCENT_NORMALIZE
+        else:
+            accent_mode = ACCENT_ABSOLUTE
+
         contrast_on = st.toggle(
             "主要色から際立つ色のみアクセント（コントラスト）",
             value=True,
+            disabled=accent_mode != ACCENT_ABSOLUTE,
             help="ON: 割合が小さいだけでなく、主要色から色差 ΔE で十分離れた色だけを"
-            "アクセントとします（隣接色相を弾く）。",
+            "アクセントとします（隣接色相を弾く）。絶対モードのみ有効。",
         )
         contrast_min = st.slider(
             "コントラスト閾値 ΔE",
             min_value=0.0, max_value=80.0, value=25.0, step=5.0,
-            disabled=not contrast_on,
+            disabled=(not contrast_on) or accent_mode != ACCENT_ABSOLUTE,
             help="大きいほど『主要色と大きく違う色』だけをアクセントに。"
             "参考: 赤-橙≈41, 赤-青≈127。",
         )
@@ -433,6 +457,7 @@ def main() -> None:
                     float(contrast_min),
                     float(chroma_gamma),
                     naming,
+                    accent_mode,
                 )
         except Exception as e:  # noqa: BLE001 - 1 件失敗しても残りは続行
             st.error(f"{file.name} の処理に失敗しました: {e}")

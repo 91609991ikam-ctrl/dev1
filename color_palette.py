@@ -25,23 +25,62 @@ from clustering import KMedoidsLite
 from color_naming import (
     ACHROMATIC_NAMES_JA,
     BASIC_NAMES_JA,
-    classify_basic_index,
-    nearest_basic_index,
+    NEUTRAL_CHROMA_FLOOR,
+    classify_basic_index_lab,
+    nearest_basic_index_lab,
     nearest_real_pixel,
     srgb_to_lab,
 )
+from color_naming import _lab_chroma  # noqa: E402
+
+
+def _stretch_ab(lab: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    """normalize モード: 有彩色（彩度フロア以上）の a*,b* だけ引き伸ばす.
+
+    無彩色（低彩度）は微小ノイズを増幅して誤命名しないよう、そのまま残す。
+    """
+    lab = lab.copy()
+    chroma0 = _lab_chroma(lab)
+    w = weights if (weights is not None and np.sum(weights) > 0) else np.ones(len(lab))
+    typ = float(np.average(chroma0, weights=w))
+    s = min(_NORM_MAX, max(1.0, _NORM_TARGET / (typ + 1e-6)))
+    mask = chroma0 >= NEUTRAL_CHROMA_FLOOR
+    lab[mask, 1:] *= s
+    return lab
 
 # 色名の判定方式
 NAMING_KNN = "knn"  # 人間の色名データ（XKCD）の k 近傍多数決
 NAMING_ANCHOR = "anchor"  # 基本色アンカーへの最近傍（旧方式）
 DEFAULT_NAMING = NAMING_KNN
 
+# アクセント判定モード
+ACCENT_ABSOLUTE = "absolute"  # 現行: 割合帯＋有彩色＋絶対コントラスト
+ACCENT_RELATIVE = "relative"  # 画像全体の彩度分布に対する相対外れ値
+ACCENT_NORMALIZE = "normalize"  # 画像ごとに彩度を正規化してから絶対判定
+DEFAULT_ACCENT_MODE = ACCENT_ABSOLUTE
 
-def _name_indices(centers: np.ndarray, naming: str) -> np.ndarray:
-    """代表色を基本色名インデックスに変換（方式で切替）."""
+# 相対アクセントのパラメータ（定数）
+_REL_MULT = 2.0  # 画像の典型彩度の何倍で外れ値とみなすか
+_REL_FLOOR = 6.0  # 相対でも最低これだけ彩度が要る（純グレー画像の誤検出防止）
+# 正規化アクセントのパラメータ（定数）
+_NORM_TARGET = 30.0  # 典型彩度をこの水準へ引き伸ばす
+_NORM_MAX = 4.0  # 引き伸ばし倍率の上限（ノイズ増幅抑制）
+
+
+def _name_indices_lab(lab: np.ndarray, naming: str) -> np.ndarray:
+    """Lab を基本色名インデックスに変換（方式で切替）."""
     if naming == NAMING_ANCHOR:
-        return nearest_basic_index(centers)
-    return classify_basic_index(centers)
+        return nearest_basic_index_lab(lab)
+    return classify_basic_index_lab(lab)
+
+
+def _name_indices(rgb: np.ndarray, naming: str, accent_mode: str = DEFAULT_ACCENT_MODE,
+                  counts: np.ndarray | None = None) -> np.ndarray:
+    """RGB を基本色名インデックスに変換（normalize モードでは彩度を引き伸ばす）."""
+    lab = srgb_to_lab(np.asarray(rgb, dtype=np.float64).reshape(-1, 3))
+    if accent_mode == ACCENT_NORMALIZE:
+        lab = _stretch_ab(lab, counts)
+    return _name_indices_lab(lab, naming)
 
 
 # クラスタリングの再現性を保つための既定シード
@@ -144,6 +183,7 @@ def make_palette(
     lab_space: bool = True,
     contrast_min: float = 0.0,
     naming: str = DEFAULT_NAMING,
+    accent_mode: str = DEFAULT_ACCENT_MODE,
 ) -> Palette:
     """ピクセル配列を k クラスタにクラスタリングしてパレットを作る.
 
@@ -186,8 +226,15 @@ def make_palette(
         for i in range(k):
             entries.append(_entry(float(proportions[i]), _to_rgb_tuple(centers[i])))
     else:
+        # 命名用の Lab を用意（normalize モードでは有彩色の a*,b* を引き伸ばす）
+        centers_lab = srgb_to_lab(centers)
+        if accent_mode == ACCENT_NORMALIZE and total:
+            lab_named = _stretch_ab(centers_lab, counts)
+        else:
+            lab_named = centers_lab
+
         # 各クラスタ中心を基本色名に対応づけ（方式で切替）
-        cluster_basic = _name_indices(centers, naming)  # shape (k,)
+        cluster_basic = _name_indices_lab(lab_named, naming)  # shape (k,)
         for b_idx in np.unique(cluster_basic):
             member_clusters = np.where(cluster_basic == b_idx)[0]
             group_count = counts[member_clusters].sum()
@@ -206,9 +253,20 @@ def make_palette(
 
             entries.append(_entry(prop, _to_rgb_tuple(swatch), BASIC_NAMES_JA[b_idx]))
 
-    # コントラスト・ゲート: アクセントは「主要色から ΔE で際立つ色」だけに絞る。
-    # 主要色 = アクセント帯より割合が大きい色（無ければ最大の色）。
-    if contrast_min > 0 and entries:
+    # --- アクセント判定モードごとの後処理 ---
+    if accent_mode == ACCENT_RELATIVE and entries:
+        # 相対: 画像全体の典型彩度に対して十分外れた（彩度が高い）色だけをアクセントに。
+        # 白っぽい画像なら淡い色でも“外れ値”として拾える。
+        chroma = _lab_chroma(srgb_to_lab(np.array([e.rgb for e in entries], dtype=np.float64)))
+        props = np.array([e.proportion for e in entries])
+        typ = float(np.average(chroma, weights=props)) if props.sum() else 0.0
+        thr = max(_REL_FLOOR, _REL_MULT * typ)
+        for e, c in zip(entries, chroma):
+            if e.is_accent and c < thr:
+                e.is_accent = False
+    elif accent_mode == ACCENT_ABSOLUTE and contrast_min > 0 and entries:
+        # 絶対: アクセントは「主要色から ΔE で際立つ色」だけに絞る。
+        # 主要色 = アクセント帯より割合が大きい色（無ければ最大の色）。
         dominant = [e for e in entries if e.proportion > accent_high]
         if not dominant:
             dominant = [max(entries, key=lambda e: e.proportion)]
@@ -219,6 +277,8 @@ def make_palette(
             e_lab = srgb_to_lab(np.array([e.rgb], dtype=np.float64))[0]
             if float(np.linalg.norm(dom_lab - e_lab, axis=1).min()) < contrast_min:
                 e.is_accent = False
+    # ACCENT_NORMALIZE: 命名を引き伸ばし済み色で行っているため、割合帯＋有彩色の
+    # 基本判定（_entry）をそのまま使う（追加のゲートなし）。
 
     # 割合の降順に並べ替え（多い順）
     entries.sort(key=lambda c: c.proportion, reverse=True)
@@ -235,6 +295,7 @@ def cluster_and_quantize(
     lab_space: bool = True,
     chroma_gamma: float = 0.0,
     naming: str = DEFAULT_NAMING,
+    accent_mode: str = DEFAULT_ACCENT_MODE,
 ) -> ClusteredImage:
     """k クラスタでクラスタリングし、「量子化画像」と「生の k 色パレット」を返す.
 
@@ -271,7 +332,7 @@ def cluster_and_quantize(
     quant_img = Image.fromarray(np.clip(np.round(quant), 0, 255).astype(np.uint8))
 
     # --- 生の k 色パレット（集約しない）---
-    cluster_basic = _name_indices(centers, naming)
+    cluster_basic = _name_indices(centers, naming, accent_mode, counts)
     entries: list[ColorEntry] = []
     for i in range(k):
         if counts[i] == 0:
@@ -301,6 +362,7 @@ def find_min_accent_k(
     lab_space: bool = True,
     contrast_min: float = 0.0,
     naming: str = DEFAULT_NAMING,
+    accent_mode: str = DEFAULT_ACCENT_MODE,
 ) -> SearchResult:
     """アクセントカラーが抽出できる最小クラスタ数を二分探索で探す.
 
@@ -320,7 +382,7 @@ def find_min_accent_k(
         if k not in palettes:
             palettes[k] = make_palette(
                 pixels, k, accent_low, accent_high, seed, aggregate,
-                exclude_achromatic, lab_space, contrast_min, naming,
+                exclude_achromatic, lab_space, contrast_min, naming, accent_mode,
             )
         has = palettes[k].has_accent
         trace.append((k, has))
@@ -329,7 +391,7 @@ def find_min_accent_k(
     # 初期クラスタ数 k_max でアクセントカラーを定義・確認
     base_palette = make_palette(
         pixels, k_max, accent_low, accent_high, seed, aggregate,
-        exclude_achromatic, lab_space, contrast_min, naming,
+        exclude_achromatic, lab_space, contrast_min, naming, accent_mode,
     )
     palettes[k_max] = base_palette
 
