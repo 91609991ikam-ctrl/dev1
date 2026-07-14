@@ -24,14 +24,13 @@ from color_palette import (
     DEFAULT_ACCENT_HIGH,
     DEFAULT_ACCENT_LOW,
     DEFAULT_K_MAX,
-    DEFAULT_K_MIN,
     DEFAULT_SEED,
     NAMING_ANCHOR,
     NAMING_KNN,
     Palette,
     cluster_and_quantize,
-    find_min_accent_k,
     load_pixels,
+    make_palette,
 )
 from segmentation import (
     METHOD_FELZENSZWALB,
@@ -154,8 +153,7 @@ def segment_image(
 def analyze_image(
     file_bytes: bytes,
     max_pixels: int,
-    k_min: int,
-    k_max: int,
+    k: int,
     accent_low: float,
     accent_high: float,
     seed: int,
@@ -166,29 +164,19 @@ def analyze_image(
     chroma_gamma: float,
     naming: str,
 ) -> dict:
-    """1 枚の画像を解析し、表示に必要な結果をまとめて返す（キャッシュ対象）."""
+    """1 枚の画像を、固定クラスタ数 k で解析して結果を返す（キャッシュ対象）."""
     image = Image.open(io.BytesIO(file_bytes))
     pixels = load_pixels(image, max_pixels=max_pixels)
-    result = find_min_accent_k(
-        pixels,
-        k_min=k_min,
-        k_max=k_max,
-        accent_low=accent_low,
-        accent_high=accent_high,
-        seed=seed,
-        aggregate=aggregate,
-        exclude_achromatic=exclude_achromatic,
-        lab_space=lab_space,
-        contrast_min=contrast_min,
-        naming=naming,
+
+    # 固定 k で集約パレットを作りアクセントを判定（最小 k 探索はしない）
+    agg_palette = make_palette(
+        pixels, k, accent_low, accent_high, seed, aggregate,
+        exclude_achromatic, lab_space, contrast_min, naming,
     )
-    no_accent = result.min_k is None
-    disp_k = result.base_palette.k if no_accent else result.min_k
-    agg_palette = result.base_palette if no_accent else result.final_palette
     accent_names = {c.name for c in agg_palette.accent_colors}
     clustered = cluster_and_quantize(
         image,
-        disp_k,
+        k,
         accent_names=accent_names,
         seed=seed,
         max_fit_pixels=max_pixels,
@@ -197,11 +185,8 @@ def analyze_image(
         naming=naming,
     )
     return {
-        "min_k": result.min_k,
-        "base_k": result.base_palette.k,
-        "disp_k": disp_k,
-        "no_accent": no_accent,
-        "trace": result.trace,
+        "k": k,
+        "no_accent": not agg_palette.has_accent,
         "palette": clustered.palette,
         "quant": clustered.image,
         "accents": agg_palette.accent_colors,
@@ -224,22 +209,20 @@ def render_result(
         img_col.subheader("領域の平均色マップ（＝色分析の入力）")
         img_col.image(mean_img, use_container_width=True)
 
-    img_col.subheader(f"クラスタリング後の画像（k = {res['disp_k']}）")
+    img_col.subheader(f"クラスタリング後の画像（k = {res['k']}）")
     img_col.image(res["quant"], use_container_width=True)
 
     if res["no_accent"]:
         st.warning(
-            f"指定した範囲（{accent_low*100:.1f}〜{accent_high*100:.1f}%）の"
-            f"アクセントカラーは k={res['base_k']} でも見つかりませんでした。"
-            "アクセント範囲を広げて再試行してみてください。"
+            f"指定した範囲（{accent_low*100:.1f}〜{accent_high*100:.1f}%）で、"
+            f"k={res['k']} ではアクセントカラーが見つかりませんでした。"
+            "アクセント範囲を広げるか、クラスタ数 k を変えて試してください。"
         )
     else:
-        st.success(
-            f"✅ アクセントカラーが抽出できる最小クラスタ数は **k = {res['min_k']}** です。"
-        )
+        st.success(f"✅ k = {res['k']} でアクセントカラーが見つかりました。")
 
     final = res["palette"]
-    st.subheader(f"🎨 カラーパレット（k = {res['disp_k']}・{len(final.colors)}色）")
+    st.subheader(f"🎨 カラーパレット（k = {res['k']}・{len(final.colors)}色）")
     render_palette(final)
 
     accents = res["accents"]
@@ -255,24 +238,12 @@ def render_result(
     with st.expander("📋 パレットの詳細（表）"):
         st.table(palette_table(final))
 
-    with st.expander("🔍 二分探索の経過を見る"):
-        trace_rows = [
-            {"試したクラスタ数 k": k, "アクセント抽出": "○ できた" if ok else "✗ できない"}
-            for k, ok in res["trace"]
-        ]
-        st.table(trace_rows)
-        st.caption(
-            "k_max でアクセントを定義し、P(k)=「アクセントが出るか」を満たす"
-            "最小の k を二分探索しています。"
-        )
-
 
 def main() -> None:
     st.title("🎨 カラーパレット抽出アプリ")
     st.caption(
-        "画像の色を K-means で減色し、基本色名（赤・橙・黄…）に近似・集約して"
-        "パレットを作ります。アクセントカラーが抽出できる最小クラスタ数を"
-        "二分探索で探します。"
+        "画像を領域分割 → k-medoids で固定クラスタ数 k に減色 → 基本色名に集約して"
+        "パレットを作り、アクセントカラーを判定します。"
     )
 
     # ---- サイドバー：パラメータ ----
@@ -289,21 +260,21 @@ def main() -> None:
         seg_method_label = st.radio(
             "分割手法",
             options=[
-                "Quickshift（内容密着・推奨）",
+                "Felzenszwalb（グラフ・推奨）",
+                "Quickshift（内容密着・やや遅い）",
                 "SLIC（格子・高速）",
-                "Felzenszwalb（グラフ）",
             ],
             index=0,
             disabled=not seg_on,
-            help="Quickshift は色の境界に密着し小領域を保持（やや遅い）。"
+            help="Felzenszwalb は速くて内容に沿う（既定）。Quickshift はより密着だが遅い。"
             "SLIC は高速だが compactness を下げないと格子っぽい。",
         )
         if seg_method_label.startswith("SLIC"):
             seg_method = METHOD_SLIC
-        elif seg_method_label.startswith("Felzenszwalb"):
-            seg_method = METHOD_FELZENSZWALB
-        else:
+        elif seg_method_label.startswith("Quickshift"):
             seg_method = METHOD_QUICKSHIFT
+        else:
+            seg_method = METHOD_FELZENSZWALB
 
         seg_max_dist = st.slider(
             "Quickshift: 粒度 (max_dist)",
@@ -397,20 +368,13 @@ def main() -> None:
         )
         contrast_min = contrast_min if contrast_on else 0.0
 
-        st.subheader("クラスタ数の探索範囲")
-        k_max = st.number_input(
-            "初期クラスタ数 (k_max)",
+        st.subheader("クラスタ数")
+        k = st.number_input(
+            "クラスタ数 (k)",
             min_value=2,
             max_value=64,
             value=DEFAULT_K_MAX,
-            help="最初にアクセントを定義するクラスタ数（既定 16）。",
-        )
-        k_min = st.number_input(
-            "最小クラスタ数 (k_min)",
-            min_value=1,
-            max_value=int(k_max),
-            value=min(DEFAULT_K_MIN, int(k_max)),
-            help="探索する最小のクラスタ数。",
+            help="このクラスタ数（固定）でパレットとアクセントを判定します（既定 16）。",
         )
 
         st.subheader("詳細設定")
@@ -459,8 +423,7 @@ def main() -> None:
                 res = analyze_image(
                     analysis_bytes,
                     int(max_pixels),
-                    int(k_min),
-                    int(k_max),
+                    int(k),
                     accent_low,
                     accent_high,
                     int(seed),
