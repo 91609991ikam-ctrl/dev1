@@ -23,9 +23,9 @@ from PIL import Image
 
 from clustering import KMedoidsLite
 from color_naming import (
-    ACHROMATIC_NAMES_JA,
     BASIC_NAMES_JA,
     NEUTRAL_CHROMA_FLOOR,
+    NON_ACCENT_NAMES_JA,
     classify_basic_index_lab,
     nearest_basic_index_lab,
     nearest_real_pixel,
@@ -211,12 +211,12 @@ def make_palette(
 
     def _entry(prop: float, rgb: tuple[int, int, int], name: str = "") -> ColorEntry:
         in_range = accent_low <= prop <= accent_high
-        # 無彩色（白・灰・黒）はアクセントから除外（exclude_achromatic=True のとき）
-        is_achromatic = exclude_achromatic and name in ACHROMATIC_NAMES_JA
+        # 無彩色（白・灰・黒）と地味色（茶）はアクセントから除外
+        is_excluded = exclude_achromatic and name in NON_ACCENT_NAMES_JA
         return ColorEntry(
             rgb=rgb,
             proportion=prop,
-            is_accent=in_range and not is_achromatic,
+            is_accent=in_range and not is_excluded,
             name=name,
         )
 

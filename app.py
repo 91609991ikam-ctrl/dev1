@@ -352,10 +352,10 @@ def main() -> None:
         )
 
         exclude_achromatic = st.toggle(
-            "無彩色（白・灰・黒）はアクセントにしない",
+            "無彩色・地味色（白・灰・黒・茶）はアクセントにしない",
             value=True,
-            help="ON: 白・灰・黒はアクセントカラーの対象外にします。"
-            "OFF: 無彩色もアクセントになりえます。",
+            help="ON: 白・灰・黒・茶（くすんだ地味な色）はアクセント対象外にします。"
+            "OFF: これらもアクセントになりえます。",
         )
 
         accent_mode_label = st.radio(

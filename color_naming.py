@@ -22,6 +22,7 @@ BASIC_COLORS: list[tuple[str, str, tuple[int, int, int]]] = [
     ("青", "blue", (40, 70, 200)),
     ("紫", "purple", (130, 60, 160)),
     ("桃", "pink", (240, 160, 180)),
+    ("茶", "brown", (130, 80, 50)),  # 地味・くすんだ色の受け皿
     ("白", "white", (245, 245, 245)),
     ("灰", "gray", (140, 140, 140)),
     ("黒", "black", (30, 30, 30)),
@@ -31,8 +32,12 @@ BASIC_NAMES_JA = [c[0] for c in BASIC_COLORS]
 BASIC_NAMES_EN = [c[1] for c in BASIC_COLORS]
 _ANCHOR_RGB = np.array([c[2] for c in BASIC_COLORS], dtype=np.float64)
 
-# 無彩色（白・灰・黒）の色名。アクセントカラーから除外する判定に使う。
+# 無彩色（白・灰・黒）の色名。明度ベースの振り分けに使う。
 ACHROMATIC_NAMES_JA = {"白", "灰", "黒"}
+# 地味・くすんだ色（茶）。無彩色とあわせてアクセントから除外する。
+MUTED_NAMES_JA = {"茶"}
+# アクセント対象外の色名（無彩色＋地味色）。
+NON_ACCENT_NAMES_JA = ACHROMATIC_NAMES_JA | MUTED_NAMES_JA
 
 
 def srgb_to_lab(rgb: np.ndarray) -> np.ndarray:
