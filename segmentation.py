@@ -20,6 +20,8 @@ from PIL import Image
 from skimage.color import label2rgb
 from skimage.segmentation import felzenszwalb, mark_boundaries, quickshift, slic
 
+from color_naming import flatten_on_white
+
 METHOD_SLIC = "slic"
 METHOD_QUICKSHIFT = "quickshift"
 METHOD_FELZENSZWALB = "felzenszwalb"
@@ -34,8 +36,8 @@ class SegmentationResult:
 
 
 def _resized(image: Image.Image, max_side: int) -> Image.Image:
-    """長辺が max_side を超えないように縮小（速度のため）."""
-    rgb = image.convert("RGB")
+    """長辺が max_side を超えないように縮小（速度のため）. 透過は白背景へ合成."""
+    rgb = flatten_on_white(image)
     w, h = rgb.size
     if max_side and max(w, h) > max_side:
         scale = max_side / max(w, h)

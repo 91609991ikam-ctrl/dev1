@@ -27,6 +27,7 @@ from color_naming import (
     NEUTRAL_CHROMA_FLOOR,
     NON_ACCENT_NAMES_JA,
     classify_basic_index_lab,
+    flatten_on_white,
     nearest_basic_index_lab,
     nearest_real_pixel,
     srgb_to_lab,
@@ -154,8 +155,9 @@ def load_pixels(image: Image.Image, max_pixels: int = 100_000) -> np.ndarray:
     """PIL 画像を (N, 3) の RGB ピクセル配列に変換する.
 
     速度のため max_pixels を超える場合は縮小（サンプリング）する。
+    透過画像は白背景に合成してから扱う。
     """
-    rgb = image.convert("RGB")
+    rgb = flatten_on_white(image)
 
     # アスペクト比を保ったまま、総ピクセル数が max_pixels 以下になるよう縮小
     w, h = rgb.size
@@ -411,7 +413,7 @@ def cluster_and_quantize(
     proportions = counts / total if total else np.zeros(k)
 
     # --- 量子化画像（表示用に縮小してから各画素を最近傍中心の色へ置換）---
-    disp = image.convert("RGB")
+    disp = flatten_on_white(image)
     w, h = disp.size
     n = w * h
     if max_display_pixels and n > max_display_pixels:

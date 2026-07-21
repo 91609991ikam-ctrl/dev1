@@ -9,6 +9,24 @@
 from __future__ import annotations
 
 import numpy as np
+from PIL import Image
+
+
+def flatten_on_white(image: Image.Image, bg: tuple[int, int, int] = (255, 255, 255)) -> Image.Image:
+    """透過画像を背景色（既定：白）に合成して RGB にする.
+
+    RGBA/LA/透過つき P モードの透明部分を bg で塗りつぶす。透明部分が黒などの
+    格納 RGB のまま残って領域分割や割合を歪めるのを防ぐ。透過がなければ単に RGB 化。
+    """
+    has_alpha = image.mode in ("RGBA", "LA") or (
+        image.mode == "P" and "transparency" in image.info
+    )
+    if not has_alpha:
+        return image.convert("RGB")
+    rgba = image.convert("RGBA")
+    base = Image.new("RGB", rgba.size, bg)
+    base.paste(rgba, mask=rgba.split()[-1])
+    return base
 
 
 # 基本色名のアンカー（代表色, sRGB 0-255）。
