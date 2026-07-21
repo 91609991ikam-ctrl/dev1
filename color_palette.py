@@ -65,6 +65,9 @@ _REL_FLOOR = 6.0  # 相対でも最低これだけ彩度が要る（純グレー
 # 正規化アクセントのパラメータ（定数）
 _NORM_TARGET = 30.0  # 典型彩度をこの水準へ引き伸ばす
 _NORM_MAX = 4.0  # 引き伸ばし倍率の上限（ノイズ増幅抑制）
+# 重複除去（似た大きい色の近くのアクセントを外す）の定数
+_DEDUP_DE = 15.0  # この ΔE 未満なら「似た色」
+_DEDUP_RATIO = 2.0  # 相手がこの倍以上大きいとき外す
 
 
 def _name_indices_lab(lab: np.ndarray, naming: str) -> np.ndarray:
@@ -226,6 +229,7 @@ def make_palette(
     naming: str = DEFAULT_NAMING,
     accent_mode: str = DEFAULT_ACCENT_MODE,
     min_prop: float = 0.0,
+    exclude_background: bool = False,
 ) -> Palette:
     """ピクセル配列を k クラスタにクラスタリングしてパレットを作る.
 
@@ -304,6 +308,20 @@ def make_palette(
 
             entries.append(_entry(prop, _to_rgb_tuple(swatch), BASIC_NAMES_JA[b_idx]))
 
+    # 背景（最大色）の割合を除いて再正規化した割合でアクセント帯を判定し直す。
+    # 例: 黒背景にキャラがドンの場合、キャラの色が背景込みだと小さく見えて誤検出
+    # されるのを防ぐ（背景を除いた中での割合で判定）。表示用 proportion は元のまま。
+    if exclude_background and len(entries) > 1:
+        bg = max(entries, key=lambda e: e.proportion)
+        denom = max(1e-9, 1.0 - bg.proportion)
+        for e in entries:
+            if e is bg:
+                e.is_accent = False
+                continue
+            p = e.proportion / denom
+            excluded = exclude_achromatic and e.name in NON_ACCENT_NAMES_JA
+            e.is_accent = (accent_low <= p <= accent_high) and not excluded
+
     # --- アクセント判定モードごとの後処理 ---
     if accent_mode == ACCENT_RELATIVE and entries:
         # 相対: 画像全体の典型彩度に対して十分外れた（彩度が高い）色だけをアクセントに。
@@ -330,6 +348,19 @@ def make_palette(
                 e.is_accent = False
     # ACCENT_NORMALIZE: 命名を引き伸ばし済み色で行っているため、割合帯＋有彩色の
     # 基本判定（_entry）をそのまま使う（追加のゲートなし）。
+
+    # 重複除去: アクセントが「はるかに大きい似た色」の近く（ΔE小）にあるなら外す。
+    # 例: 橙 0.5% が 茶 8.4% と似ている場合、同じ色の一部なのでアクセントにしない。
+    if entries:
+        e_lab = srgb_to_lab(np.array([e.rgb for e in entries], dtype=np.float64))
+        for i, e in enumerate(entries):
+            if not e.is_accent:
+                continue
+            for j, o in enumerate(entries):
+                if o.proportion >= _DEDUP_RATIO * e.proportion and \
+                        float(np.linalg.norm(e_lab[i] - e_lab[j])) < _DEDUP_DE:
+                    e.is_accent = False
+                    break
 
     # 割合の降順に並べ替え（多い順）
     entries.sort(key=lambda c: c.proportion, reverse=True)

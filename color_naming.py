@@ -134,8 +134,12 @@ USER_CORRECTIONS: list[tuple[str, str]] = [
     ("#B9AFC9", "灰"),
     ("#7B5C60", "茶"),
     ("#A0675C", "赤"),
+    ("#E4D6C3", "白"),  # 淡いベージュ（ほぼ白）
+    ("#CA5360", "赤"),
+    ("#414A59", "灰"),
+    ("#DDBB61", "黄"),
 ]
-_CORR_RADIUS = 15.0  # この ΔE 以内なら補正ラベルを採用
+_CORR_RADIUS = 10.0  # この ΔE 以内なら補正ラベルを採用（近い色だけ局所的に上書き）
 
 
 def _hex_to_rgb(h: str) -> tuple[int, int, int]:

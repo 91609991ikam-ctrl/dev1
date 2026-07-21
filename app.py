@@ -168,6 +168,7 @@ def analyze_image(
     naming: str,
     accent_mode: str,
     min_prop: float,
+    exclude_background: bool,
 ) -> dict:
     """1 枚の画像を、固定クラスタ数 k で解析して結果を返す（キャッシュ対象）."""
     image = Image.open(io.BytesIO(file_bytes))
@@ -176,7 +177,8 @@ def analyze_image(
     # 固定 k で集約パレットを作りアクセントを判定（最小 k 探索はしない）
     agg_palette = make_palette(
         pixels, k, accent_low, accent_high, seed, aggregate,
-        exclude_achromatic, lab_space, contrast_min, naming, accent_mode, min_prop,
+        exclude_achromatic, lab_space, contrast_min, naming, accent_mode,
+        min_prop, exclude_background,
     )
     accent_names = {c.name for c in agg_palette.accent_colors}
     clustered = cluster_and_quantize(
@@ -191,12 +193,18 @@ def analyze_image(
         accent_mode=accent_mode,
         min_prop=min_prop,
     )
+    # 集約カラー（全色: 名前・hex・割合・アクセント可否）
+    agg_colors = [
+        {"name": c.name, "hex": c.hex, "percent": round(c.percent, 2), "accent": c.is_accent}
+        for c in agg_palette.colors
+    ]
     return {
         "k": k,
         "no_accent": not agg_palette.has_accent,
         "palette": clustered.palette,
         "quant": clustered.image,
         "accents": agg_palette.accent_colors,
+        "agg_colors": agg_colors,
     }
 
 
@@ -242,7 +250,21 @@ def render_result(
             )
         )
 
-    with st.expander("📋 パレットの詳細（表）"):
+    # 集約カラー（全色）: アクセント以外も含めた基本色名ごとの割合
+    st.markdown("**集約カラー（全色・割合の多い順）:**")
+    st.table(
+        [
+            {
+                "色名": c["name"],
+                "16進数": c["hex"],
+                "割合(%)": c["percent"],
+                "アクセント": "⭐" if c["accent"] else "",
+            }
+            for c in res["agg_colors"]
+        ]
+    )
+
+    with st.expander("📋 パレットの詳細（生の k 色）"):
         st.table(palette_table(final))
 
 
@@ -359,6 +381,12 @@ def main() -> None:
             help="ON: 白・灰・黒・茶（くすんだ地味な色）はアクセント対象外にします。"
             "OFF: これらもアクセントになりえます。",
         )
+        exclude_background = st.toggle(
+            "背景（最大色）を除いて割合を判定",
+            value=False,
+            help="ON: 最も割合の大きい色を背景とみなし、それを除いた中での割合で"
+            "アクセントを判定します。黒背景にキャラがドンの絵などで誤検出を防げます。",
+        )
 
         accent_mode_label = st.radio(
             "アクセント判定モード",
@@ -467,6 +495,7 @@ def main() -> None:
                     naming,
                     accent_mode,
                     float(min_prop),
+                    exclude_background,
                 )
         except Exception as e:  # noqa: BLE001 - 1 件失敗しても残りは続行
             st.error(f"{file.name} の処理に失敗しました: {e}")
