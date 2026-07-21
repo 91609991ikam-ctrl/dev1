@@ -39,6 +39,8 @@ from segmentation import (
     METHOD_FELZENSZWALB,
     METHOD_QUICKSHIFT,
     METHOD_SLIC,
+    REGION_MEAN,
+    REGION_MEDIAN,
     segment,
 )
 
@@ -138,9 +140,9 @@ def _png_bytes(image: Image.Image) -> bytes:
 @st.cache_data(show_spinner=False)
 def segment_image(
     file_bytes: bytes, method: str, n_segments: int, compactness: float,
-    scale: float, max_dist: float,
+    scale: float, max_dist: float, region_agg: str,
 ):
-    """領域分割し、平均色マップ・境界オーバーレイ・領域数を返す（キャッシュ対象）."""
+    """領域分割し、代表色マップ・境界オーバーレイ・領域数を返す（キャッシュ対象）."""
     seg = segment(
         Image.open(io.BytesIO(file_bytes)),
         method=method,
@@ -148,6 +150,7 @@ def segment_image(
         compactness=compactness,
         scale=scale,
         max_dist=max_dist,
+        region_agg=region_agg,
     )
     return seg.mean_color_image, seg.boundary_overlay, seg.n_regions
 
@@ -333,6 +336,14 @@ def main() -> None:
             disabled=(not seg_on) or seg_method != METHOD_FELZENSZWALB,
             help="大きいほど大まかな領域になります。",
         )
+        region_median = st.toggle(
+            "領域の代表色を中央値にする",
+            value=False,
+            disabled=not seg_on,
+            help="ON: 各領域の代表色をチャンネル中央値に（縁の混色など外れ値に頑健）。"
+            "OFF: 平均色。",
+        )
+        region_agg = REGION_MEDIAN if region_median else REGION_MEAN
 
         st.subheader("クラスタリング")
         st.caption("手法: k-medoids（代表色に実在画素を使い色のくすみを避ける）")
@@ -479,6 +490,7 @@ def main() -> None:
                     mean_img, overlay_img, n_regions = segment_image(
                         data, seg_method, int(seg_n_segments),
                         float(seg_compactness), float(seg_scale), float(seg_max_dist),
+                        region_agg,
                     )
                     seg = (mean_img, overlay_img, n_regions)
                     analysis_bytes = _png_bytes(mean_img)

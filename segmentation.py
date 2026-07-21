@@ -17,6 +17,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from PIL import Image
+from scipy import ndimage
 from skimage.color import label2rgb
 from skimage.segmentation import felzenszwalb, mark_boundaries, quickshift, slic
 
@@ -25,6 +26,21 @@ from color_naming import flatten_on_white
 METHOD_SLIC = "slic"
 METHOD_QUICKSHIFT = "quickshift"
 METHOD_FELZENSZWALB = "felzenszwalb"
+
+REGION_MEAN = "mean"
+REGION_MEDIAN = "median"
+
+
+def _region_median_image(arr: np.ndarray, labels: np.ndarray) -> np.ndarray:
+    """各領域を「チャンネルごとの中央値」で塗った画像を返す（外れ値に頑健）."""
+    idx = np.unique(labels)
+    lut = np.zeros((int(labels.max()) + 1, 3), dtype=np.float64)
+    for ch in range(3):
+        meds = ndimage.labeled_comprehension(
+            arr[..., ch].astype(np.float64), labels, idx, np.median, np.float64, 0.0
+        )
+        lut[idx, ch] = meds
+    return lut[labels]
 
 
 @dataclass
@@ -57,6 +73,7 @@ def segment(
     kernel_size: float = 5.0,
     ratio: float = 0.8,
     max_side: int = 900,
+    region_agg: str = REGION_MEAN,
 ) -> SegmentationResult:
     """画像を領域分割し、確認用の画像もまとめて返す.
 
@@ -64,6 +81,9 @@ def segment(
       - slic:         格子ベース。compactness を下げるほど色の境界に沿う。
       - quickshift:   モード探索。内容に密着し小領域を保持しやすい（やや遅い）。
       - felzenszwalb: グラフベース。scale で粒度調整。
+    region_agg:
+      - mean:   各領域を平均色で代表（既定）。
+      - median: 各領域をチャンネル中央値で代表（縁の混色など外れ値に頑健）。
     """
     # quickshift は重いので入力をやや小さめにする
     side = 640 if method == METHOD_QUICKSHIFT else max_side
@@ -79,9 +99,12 @@ def segment(
     else:
         labels = slic(arr, n_segments=n_segments, compactness=compactness, start_label=0)
 
-    # 各領域をその平均色で塗った画像（＝色分析にかける入力そのもの）
-    avg = label2rgb(labels, arr, kind="avg", bg_label=-1)
-    mean_img = Image.fromarray(np.clip(avg, 0, 255).astype(np.uint8))
+    # 各領域を代表色（平均 or 中央値）で塗った画像（＝色分析にかける入力そのもの）
+    if region_agg == REGION_MEDIAN:
+        rep = _region_median_image(arr, labels)
+    else:
+        rep = label2rgb(labels, arr, kind="avg", bg_label=-1)
+    mean_img = Image.fromarray(np.clip(rep, 0, 255).astype(np.uint8))
 
     # 元画像に境界線を重ねた確認画像
     ov = mark_boundaries(arr.astype(np.float64) / 255.0, labels, color=(1.0, 1.0, 0.0))
