@@ -216,13 +216,13 @@ def render_result(
     img_col.subheader("入力画像")
     img_col.image(image, use_container_width=True)
 
-    # 領域分割の確認ビュー（境界オーバーレイ ＋ 領域平均色マップ）
+    # 領域分割の確認ビュー（境界 ＋ 平均色マップ を横並び）
     if seg is not None:
         mean_img, overlay_img, n_regions = seg
-        img_col.subheader(f"領域分割（境界／{n_regions} 領域）")
-        img_col.image(overlay_img, use_container_width=True)
-        img_col.subheader("領域の平均色マップ（＝色分析の入力）")
-        img_col.image(mean_img, use_container_width=True)
+        img_col.subheader(f"領域分割（{n_regions} 領域）")
+        seg_c1, seg_c2 = img_col.columns(2)
+        seg_c1.image(overlay_img, caption="境界", use_container_width=True)
+        seg_c2.image(mean_img, caption="平均色マップ（分析入力）", use_container_width=True)
 
     img_col.subheader(f"クラスタリング後の画像（k = {res['k']}）")
     img_col.image(res["quant"], use_container_width=True)
@@ -250,22 +250,25 @@ def render_result(
             )
         )
 
-    # 集約カラー（全色）: アクセント以外も含めた基本色名ごとの割合
+    # 集約カラー（全色）: アクセント以外も含めた基本色名ごとの割合（コンパクト表示）
     st.markdown("**集約カラー（全色・割合の多い順）:**")
-    st.table(
+    tbl_col, _ = st.columns([2, 3])
+    tbl_col.dataframe(
         [
             {
                 "色名": c["name"],
                 "16進数": c["hex"],
-                "割合(%)": c["percent"],
-                "アクセント": "⭐" if c["accent"] else "",
+                "割合%": c["percent"],
+                "": "⭐" if c["accent"] else "",
             }
             for c in res["agg_colors"]
-        ]
+        ],
+        hide_index=True,
+        use_container_width=True,
     )
 
     with st.expander("📋 パレットの詳細（生の k 色）"):
-        st.table(palette_table(final))
+        st.dataframe(palette_table(final), hide_index=True, use_container_width=True)
 
 
 def main() -> None:
