@@ -167,6 +167,7 @@ def analyze_image(
     chroma_gamma: float,
     naming: str,
     accent_mode: str,
+    min_prop: float,
 ) -> dict:
     """1 枚の画像を、固定クラスタ数 k で解析して結果を返す（キャッシュ対象）."""
     image = Image.open(io.BytesIO(file_bytes))
@@ -175,7 +176,7 @@ def analyze_image(
     # 固定 k で集約パレットを作りアクセントを判定（最小 k 探索はしない）
     agg_palette = make_palette(
         pixels, k, accent_low, accent_high, seed, aggregate,
-        exclude_achromatic, lab_space, contrast_min, naming, accent_mode,
+        exclude_achromatic, lab_space, contrast_min, naming, accent_mode, min_prop,
     )
     accent_names = {c.name for c in agg_palette.accent_colors}
     clustered = cluster_and_quantize(
@@ -188,6 +189,7 @@ def analyze_image(
         chroma_gamma=chroma_gamma,
         naming=naming,
         accent_mode=accent_mode,
+        min_prop=min_prop,
     )
     return {
         "k": k,
@@ -400,6 +402,12 @@ def main() -> None:
             value=32,
             help="このクラスタ数（固定）でパレットとアクセントを判定します（既定 32）。",
         )
+        min_prop = st.slider(
+            "最小割合フロア (%)",
+            min_value=0.0, max_value=3.0, value=0.5, step=0.1,
+            help="この割合未満の極小クラスタ（ノイズ色）を、最も近い色へ併合します。"
+            "k を増やすと出る 0.1〜0.5% のノイズ色を掃除できます。0 で無効。",
+        ) / 100.0
 
         st.subheader("詳細設定")
         max_pixels = st.select_slider(
@@ -458,6 +466,7 @@ def main() -> None:
                     float(chroma_gamma),
                     naming,
                     accent_mode,
+                    float(min_prop),
                 )
         except Exception as e:  # noqa: BLE001 - 1 件失敗しても残りは続行
             st.error(f"{file.name} の処理に失敗しました: {e}")

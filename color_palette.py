@@ -172,6 +172,47 @@ def _to_rgb_tuple(arr) -> tuple[int, int, int]:
     return (max(0, min(255, r)), max(0, min(255, g)), max(0, min(255, b)))
 
 
+def _merge_small(centers: np.ndarray, counts: np.ndarray, min_prop: float):
+    """割合が min_prop 未満の小クラスタを、凝集的に最も近い色へ併合する.
+
+    最小の（フロア未満の）クラスタを最近傍（Lab）へ併合、を繰り返す。近い色どうしが
+    先にまとまるので、複数サブクラスタに割れた小さな色（例: 花の赤）は互いに併合されて
+    生き残り、バラバラなノイズだけが大きな色へ吸収される。
+
+    戻り値 (keep_idx, remap):
+      keep_idx: 残すクラスタの元インデックス
+      remap:    元クラスタ index -> keep_idx 内の位置（新インデックス）
+    """
+    counts = np.asarray(counts, dtype=np.float64)
+    n = len(centers)
+    total = counts.sum()
+    if min_prop <= 0 or total == 0 or n <= 1:
+        return np.arange(n), np.arange(n)
+
+    lab = srgb_to_lab(np.asarray(centers, dtype=np.float64))
+    floor = min_prop * total
+    grp = np.arange(n)  # 各元クラスタが属する現在のグループ根
+    gcount = counts.copy()
+    active = list(range(n))
+
+    while len(active) > 1:
+        below = [g for g in active if gcount[g] < floor]
+        if not below:
+            break
+        g = min(below, key=lambda x: gcount[x])  # 最小のフロア未満グループ
+        others = [o for o in active if o != g]
+        tgt = others[int(np.argmin([np.linalg.norm(lab[g] - lab[o]) for o in others]))]
+        grp[grp == g] = tgt
+        gcount[tgt] += gcount[g]
+        gcount[g] = 0.0
+        active.remove(g)
+
+    keep_idx = np.array(sorted(active))
+    pos = {g: i for i, g in enumerate(keep_idx)}
+    remap = np.array([pos[grp[c]] for c in range(n)], dtype=int)
+    return keep_idx, remap
+
+
 def make_palette(
     pixels: np.ndarray,
     k: int,
@@ -184,6 +225,7 @@ def make_palette(
     contrast_min: float = 0.0,
     naming: str = DEFAULT_NAMING,
     accent_mode: str = DEFAULT_ACCENT_MODE,
+    min_prop: float = 0.0,
 ) -> Palette:
     """ピクセル配列を k クラスタにクラスタリングしてパレットを作る.
 
@@ -206,6 +248,15 @@ def make_palette(
     centers = km.cluster_centers_
 
     counts = np.bincount(labels, minlength=k)
+
+    # 極小クラスタを近い色へ併合（min_prop 未満を吸収）
+    if min_prop > 0:
+        keep_idx, remap = _merge_small(centers, counts, min_prop)
+        labels = remap[labels]
+        centers = centers[keep_idx]
+        k = len(keep_idx)
+        counts = np.bincount(labels, minlength=k)
+
     total = counts.sum()
     proportions = counts / total if total else np.zeros(k)
 
@@ -296,6 +347,7 @@ def cluster_and_quantize(
     chroma_gamma: float = 0.0,
     naming: str = DEFAULT_NAMING,
     accent_mode: str = DEFAULT_ACCENT_MODE,
+    min_prop: float = 0.0,
 ) -> ClusteredImage:
     """k クラスタでクラスタリングし、「量子化画像」と「生の k 色パレット」を返す.
 
@@ -314,8 +366,16 @@ def cluster_and_quantize(
     )
     km.fit(fit_pixels)
     centers = km.cluster_centers_
-
     counts = np.bincount(km.labels_, minlength=k)
+
+    # 極小クラスタを近い色へ併合（ノイズ色の除去）
+    remap = np.arange(k)
+    if min_prop > 0:
+        keep_idx, remap = _merge_small(centers, counts, min_prop)
+        centers = centers[keep_idx]
+        k = len(keep_idx)
+        counts = np.bincount(remap[km.labels_], minlength=k)
+
     total = counts.sum()
     proportions = counts / total if total else np.zeros(k)
 
@@ -327,7 +387,7 @@ def cluster_and_quantize(
         scale = (max_display_pixels / n) ** 0.5
         disp = disp.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.BILINEAR)
     disp_arr = np.asarray(disp, dtype=np.float64).reshape(-1, 3)
-    disp_labels = km.predict(disp_arr)
+    disp_labels = remap[km.predict(disp_arr)]
     quant = centers[disp_labels].reshape(disp.height, disp.width, 3)
     quant_img = Image.fromarray(np.clip(np.round(quant), 0, 255).astype(np.uint8))
 

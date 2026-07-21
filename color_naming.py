@@ -126,7 +126,31 @@ _CN_LAB_CH = _CN_LAB[_CHROMATIC_MASK]
 _CN_TERM_CH = _CN_TERM[_CHROMATIC_MASK]
 
 # 無彩色とみなす彩度フロア（C*）。これ未満は明度で 白/灰/黒 に振り分ける。
-NEUTRAL_CHROMA_FLOOR = 6.0
+NEUTRAL_CHROMA_FLOOR = 8.0
+
+# ユーザー補正（人手のラベル）。近い色（ΔE < _CORR_RADIUS）はこの判定を最優先する。
+# (HEX, 基本色名) を足すだけで局所的に命名を直せる。
+USER_CORRECTIONS: list[tuple[str, str]] = [
+    ("#B9AFC9", "灰"),
+    ("#7B5C60", "茶"),
+    ("#A0675C", "赤"),
+]
+_CORR_RADIUS = 15.0  # この ΔE 以内なら補正ラベルを採用
+
+
+def _hex_to_rgb(h: str) -> tuple[int, int, int]:
+    h = h.lstrip("#")
+    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+
+
+_CORR_LAB = (
+    srgb_to_lab(np.array([_hex_to_rgb(h) for h, _ in USER_CORRECTIONS], dtype=np.float64))
+    if USER_CORRECTIONS
+    else np.empty((0, 3))
+)
+_CORR_TERM = np.array(
+    [BASIC_NAMES_JA.index(name) for _, name in USER_CORRECTIONS], dtype=int
+)
 
 
 def _lab_chroma(lab: np.ndarray) -> np.ndarray:
@@ -172,13 +196,29 @@ def classify_basic_index_lab(
     入力 (N,3) Lab -> 出力 (N,).
     """
     lab = np.asarray(lab, dtype=np.float64).reshape(-1, 3)
-    chroma = _lab_chroma(lab)
     out = np.empty(len(lab), dtype=int)
-    achrom = chroma < chroma_floor
-    if achrom.any():
-        out[achrom] = _achromatic_by_lightness(lab[achrom, 0])
-    if (~achrom).any():
-        out[~achrom] = _knn_vote(lab[~achrom], _CN_LAB_CH, _CN_TERM_CH, k_neighbors)
+
+    # 1) ユーザー補正: 近い色（ΔE < 半径）はその手動ラベルを最優先
+    handled = np.zeros(len(lab), dtype=bool)
+    if len(_CORR_LAB):
+        cd = np.linalg.norm(lab[:, None, :] - _CORR_LAB[None, :, :], axis=2)  # (N, C)
+        nearest = np.argmin(cd, axis=1)
+        within = cd[np.arange(len(lab)), nearest] < _CORR_RADIUS
+        out[within] = _CORR_TERM[nearest[within]]
+        handled = within
+
+    # 2) 残りは 彩度フロア（無彩色は明度で）→ 有彩色は k 近傍投票
+    rest = ~handled
+    if rest.any():
+        sub = lab[rest]
+        chroma = _lab_chroma(sub)
+        achrom = chroma < chroma_floor
+        res = np.empty(len(sub), dtype=int)
+        if achrom.any():
+            res[achrom] = _achromatic_by_lightness(sub[achrom, 0])
+        if (~achrom).any():
+            res[~achrom] = _knn_vote(sub[~achrom], _CN_LAB_CH, _CN_TERM_CH, k_neighbors)
+        out[rest] = res
     return out
 
 
