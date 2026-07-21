@@ -104,7 +104,16 @@ def segment(
         rep = _region_median_image(arr, labels)
     else:
         rep = label2rgb(labels, arr, kind="avg", bg_label=-1)
-    mean_img = Image.fromarray(np.clip(rep, 0, 255).astype(np.uint8))
+    rep = np.clip(rep, 0, 255).astype(np.uint8)
+    # 透過画像は元のアルファを保持（透明部分＝背景を下流で除外できるように）
+    has_alpha = image.mode in ("RGBA", "LA") or (
+        image.mode == "P" and "transparency" in image.info
+    )
+    if has_alpha:
+        a = image.convert("RGBA").split()[-1].resize(rgb.size, Image.BILINEAR)
+        mean_img = Image.fromarray(np.dstack([rep, np.asarray(a)]), "RGBA")
+    else:
+        mean_img = Image.fromarray(rep)
 
     # 元画像に境界線を重ねた確認画像
     ov = mark_boundaries(arr.astype(np.float64) / 255.0, labels, color=(1.0, 1.0, 0.0))

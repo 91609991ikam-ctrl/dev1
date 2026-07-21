@@ -20,9 +20,9 @@ import math
 
 import numpy as np
 import streamlit as st
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 
-from color_naming import flatten_on_white, srgb_to_lab
+from color_naming import srgb_to_lab
 
 from color_palette import (
     DEFAULT_ACCENT_HIGH,
@@ -36,6 +36,7 @@ from color_palette import (
     NAMING_KNN,
     Palette,
     cluster_and_quantize,
+    foreground_mask,
     load_pixels,
     make_palette,
 )
@@ -119,33 +120,71 @@ def render_palette(palette: Palette) -> None:
 
 
 def build_marked_image(image: Image.Image, colors: list, width: int = 540) -> Image.Image:
-    """画像上に、各パレット色の代表位置へ色ピン（マーカー）を打った画像を返す.
+    """入力画像の上に、各パレット色の代表位置へ色ピンを打った画像を返す.
 
-    各画素を最も近いパレット色（Lab）に割り当て、その重心付近の実画素にピンを置く。
+    背景（透過・四隅一致の背景色）は除外し、前景画素だけを最近傍パレット色に割り当て、
+    その重心付近の実画素にピンを置く。ピンどうしは重ならないよう軽く反発させて広げる。
     colors: (rgb, 割合) のリスト。
     """
-    disp = flatten_on_white(image)
-    w, h = disp.size
-    if w > width:
-        disp = disp.resize((width, max(1, int(h * width / w))), Image.BILINEAR)
+    disp, mask = foreground_mask(image, width)
     W, H = disp.size
     arr = np.asarray(disp, dtype=np.float64).reshape(-1, 3)
+    fg = np.where(mask)[0]
+    if len(fg) == 0 or not colors:
+        return disp
     plab = srgb_to_lab(np.array([c[0] for c in colors], dtype=np.float64))
-    pix = srgb_to_lab(arr)
+    pix = srgb_to_lab(arr[fg])
     assign = np.argmin(np.linalg.norm(pix[:, None, :] - plab[None, :, :], axis=2), axis=1)
-    ys, xs = np.divmod(np.arange(len(arr)), W)
+    ys, xs = np.divmod(fg, W)
+
+    # 各色の初期ピン位置（前景重心に最も近い同色画素）
+    pts: list = []
+    for i in range(len(colors)):
+        sel = assign == i
+        if not sel.any():
+            pts.append(None)
+            continue
+        si = np.where(sel)[0]
+        cx, cy = xs[si].mean(), ys[si].mean()
+        j = si[np.argmin((xs[si] - cx) ** 2 + (ys[si] - cy) ** 2)]
+        pts.append([float(xs[j]), float(ys[j])])
+
+    # 重なり回避: 近すぎるピンを反発させて広げる
+    r = 13
+    mind = 2.15 * r
+    active = [p for p in pts if p is not None]
+    for _ in range(120):
+        moved = False
+        for a in range(len(active)):
+            for b in range(a + 1, len(active)):
+                dx = active[a][0] - active[b][0]
+                dy = active[a][1] - active[b][1]
+                dist = math.hypot(dx, dy)
+                if dist < 1e-6:
+                    active[a][0] += r
+                    moved = True
+                elif dist < mind:
+                    push = (mind - dist) / 2.0
+                    ux, uy = dx / dist, dy / dist
+                    active[a][0] += ux * push
+                    active[a][1] += uy * push
+                    active[b][0] -= ux * push
+                    active[b][1] -= uy * push
+                    moved = True
+        for p in active:
+            p[0] = min(max(p[0], r + 2), W - r - 2)
+            p[1] = min(max(p[1], r + 2), H - r - 2)
+        if not moved:
+            break
 
     draw = ImageDraw.Draw(disp, "RGBA")
-    r = 13
-    for i, (rgb, _p) in enumerate(colors):
-        mi = np.where(assign == i)[0]
-        if len(mi) == 0:
+    for i, p in enumerate(pts):
+        if p is None:
             continue
-        cx, cy = xs[mi].mean(), ys[mi].mean()
-        j = mi[np.argmin((xs[mi] - cx) ** 2 + (ys[mi] - cy) ** 2)]  # 重心に最も近い同色画素
-        x, y = int(xs[j]), int(ys[j])
+        x, y = int(p[0]), int(p[1])
+        rgb = tuple(int(v) for v in colors[i][0])
         draw.ellipse([x - r - 3, y - r - 3, x + r + 3, y + r + 3], outline=(0, 0, 0, 90), width=1)
-        draw.ellipse([x - r, y - r, x + r, y + r], fill=tuple(int(v) for v in rgb) + (255,),
+        draw.ellipse([x - r, y - r, x + r, y + r], fill=rgb + (255,),
                      outline=(255, 255, 255, 255), width=3)
     return disp
 
@@ -164,65 +203,6 @@ def swatch_bands_html(colors: list) -> str:
             f"<span>{hexv}</span><span style='opacity:.75'>{pct:.1f}%</span></div>"
         )
     return f'<div style="border-radius:10px;overflow:hidden;border:1px solid #ddd;">{rows}</div>'
-
-
-def designer_palette_image(colors: list[tuple[tuple[int, int, int], float]]) -> Image.Image:
-    """絵の具パレット風の色見本画像を作る（文字なし）.
-
-    colors: (rgb, 割合) のリスト（割合の多い順）。割合が大きいほど絵の具の
-    ダブが大きく、上の弧に沿って配置する。木製パレット＋艶のある絵の具の見た目。
-    """
-    s = 3  # 高解像度で描いて縮小（アンチエイリアス）
-    W, H = 640 * s, 430 * s
-    base = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    d = ImageDraw.Draw(base)
-
-    # パレット本体（クリーム色の楕円）
-    cx, cy, rx, ry = 320 * s, 240 * s, 296 * s, 178 * s
-    d.ellipse([cx - rx, cy - ry, cx + rx, cy + ry],
-              fill=(234, 224, 205, 255), outline=(198, 183, 156, 255), width=3 * s)
-    # 内側のやわらかい陰影（下側を少し暗く）
-    d.ellipse([cx - rx + 8 * s, cy - ry + 26 * s, cx + rx - 8 * s, cy + ry + 10 * s],
-              outline=(0, 0, 0, 14), width=10 * s)
-    # 親指穴
-    hx, hy, hrx, hry = 176 * s, 330 * s, 44 * s, 31 * s
-    d.ellipse([hx - hrx, hy - hry, hx + hrx, hy + hry],
-              fill=(214, 201, 176, 255), outline=(190, 175, 148, 255), width=2 * s)
-
-    # 各絵の具ダブの位置・大きさを決める（上側の弧に沿って、内側に収める）
-    n = len(colors)
-    acx, acy, aax, aay = 330 * s, 232 * s, 210 * s, 74 * s
-    maxp = max((p for _, p in colors), default=1.0) or 1.0
-    dabs = []
-    for i, (rgb, p) in enumerate(colors):
-        t = i / (n - 1) if n > 1 else 0.5
-        a = math.radians(200 + t * 140)
-        x = acx + aax * math.cos(a)
-        y = acy + aay * math.sin(a)
-        r = (30 + 24 * (p / maxp) ** 0.5) * s
-        dabs.append((x, y, r, tuple(int(v) for v in rgb)))
-
-    # 影（別レイヤーにまとめて軽くぼかす）
-    shadow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    sd = ImageDraw.Draw(shadow)
-    for x, y, r, _ in dabs:
-        sd.ellipse([x - r + 2 * s, y - r + 5 * s, x + r + 2 * s, y + r + 5 * s],
-                   fill=(45, 33, 22, 130))
-    base = Image.alpha_composite(base, shadow.filter(ImageFilter.GaussianBlur(4 * s)))
-    d = ImageDraw.Draw(base)
-
-    # 絵の具ダブ本体＋ハイライト
-    highlight = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    hd = ImageDraw.Draw(highlight)
-    for x, y, r, rgb in dabs:
-        d.ellipse([x - r, y - r, x + r, y + r], fill=rgb + (255,))
-        d.ellipse([x - r, y - r, x + r, y + r], outline=(0, 0, 0, 30), width=max(1, int(1.4 * s)))
-        hr = r * 0.42
-        hxx, hyy = x - r * 0.3, y - r * 0.34
-        hd.ellipse([hxx - hr, hyy - hr, hxx + hr, hyy + hr], fill=(255, 255, 255, 90))
-    base = Image.alpha_composite(base, highlight.filter(ImageFilter.GaussianBlur(2 * s)))
-
-    return base.resize((W // s, H // s), Image.LANCZOS)
 
 
 def palette_table(palette: Palette) -> list[dict]:
@@ -244,7 +224,7 @@ def palette_table(palette: Palette) -> list[dict]:
 
 def _png_bytes(image: Image.Image) -> bytes:
     buf = io.BytesIO()
-    image.convert("RGB").save(buf, format="PNG")
+    image.save(buf, format="PNG")  # RGBA ならアルファを保持
     return buf.getvalue()
 
 
@@ -269,6 +249,7 @@ def segment_image(
 @st.cache_data(show_spinner=False)
 def analyze_image(
     file_bytes: bytes,
+    orig_bytes: bytes,
     max_pixels: int,
     k: int,
     accent_low: float,
@@ -284,7 +265,10 @@ def analyze_image(
     min_prop: float,
     exclude_background: bool,
 ) -> dict:
-    """1 枚の画像を、固定クラスタ数 k で解析して結果を返す（キャッシュ対象）."""
+    """1 枚の画像を、固定クラスタ数 k で解析して結果を返す（キャッシュ対象）.
+
+    file_bytes: 分析入力（領域分割後の代表色マップ等）。orig_bytes: 元画像（ピン用）。
+    """
     image = Image.open(io.BytesIO(file_bytes))
     pixels = load_pixels(image, max_pixels=max_pixels)
 
@@ -318,9 +302,18 @@ def analyze_image(
         }
         for c in agg_palette.colors
     ]
-    # 画像上の色ピン（各パレット色の代表位置）
-    marker_colors = [(tuple(c["rgb"]), c["percent"]) for c in agg_colors[:10]]
-    marked = build_marked_image(image, marker_colors) if marker_colors else image
+    # 役割で絞る: ベース/メイン/サブ（一定割合以上）または アクセント のみ採用。
+    # それ以外の地味な小さい色はパレットに出さない。
+    role_min = 5.0  # これ以上の割合はベース/サブとして採用
+    palette_colors = [c for c in agg_colors if c["accent"] or c["percent"] >= role_min]
+    if not palette_colors and agg_colors:
+        palette_colors = [agg_colors[0]]
+    palette_colors = palette_colors[:10]
+
+    # 元画像の上に色ピン（背景は除外・重なり回避）
+    orig = Image.open(io.BytesIO(orig_bytes))
+    marker_colors = [(tuple(c["rgb"]), c["percent"]) for c in palette_colors]
+    marked = build_marked_image(orig, marker_colors) if marker_colors else orig
 
     return {
         "k": k,
@@ -329,6 +322,7 @@ def analyze_image(
         "quant": clustered.image,
         "accents": agg_palette.accent_colors,
         "agg_colors": agg_colors,
+        "palette_colors": palette_colors,
         "marked": marked,
     }
 
@@ -361,8 +355,8 @@ def render_result(
     else:
         st.success(f"✅ k = {res['k']} でアクセントカラーが見つかりました。")
 
-    # 最終カラーパレット（色数は自動決定）: 画像＋色ピン ＋ 縦バンド（HEX）
-    top = res["agg_colors"][:10]
+    # 最終カラーパレット（色数は自動決定・役割のある色のみ）: 画像＋色ピン ＋ 縦バンド
+    top = res["palette_colors"]
     if top:
         st.subheader(f"🎨 最終カラーパレット（{len(top)}色・自動）")
         c_img, c_sw = st.columns([1, 1])
@@ -371,11 +365,6 @@ def render_result(
             swatch_bands_html([(tuple(c["rgb"]), c["percent"]) for c in top]),
             unsafe_allow_html=True,
         )
-        with st.expander("🎨 絵の具パレット風で見る（文字なし）"):
-            st.image(
-                designer_palette_image([(tuple(c["rgb"]), c["percent"] / 100.0) for c in top]),
-                use_container_width=True,
-            )
 
     final = res["palette"]
     st.subheader(f"クラスタ別の内訳（k = {res['k']}・{len(final.colors)}色）")
@@ -635,6 +624,7 @@ def main() -> None:
 
                 res = analyze_image(
                     analysis_bytes,
+                    data,
                     int(max_pixels),
                     int(k),
                     accent_low,

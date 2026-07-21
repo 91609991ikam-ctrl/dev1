@@ -151,24 +151,89 @@ class ClusteredImage:
     palette: Palette  # 集約せず各クラスタ中心をそのまま 1 色としたパレット
 
 
-def load_pixels(image: Image.Image, max_pixels: int = 100_000) -> np.ndarray:
-    """PIL 画像を (N, 3) の RGB ピクセル配列に変換する.
+_BG_TOL = 16.0  # 背景色とみなす ΔE（この範囲の色を背景として除外）
 
-    速度のため max_pixels を超える場合は縮小（サンプリング）する。
-    透過画像は白背景に合成してから扱う。
+
+def _has_alpha(image: Image.Image) -> bool:
+    return image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info)
+
+
+def _detect_corner_bg(arr: np.ndarray) -> np.ndarray | None:
+    """四隅が十分一致していれば、その色を「背景色」として返す（なければ None）."""
+    h, w = arr.shape[:2]
+    ps = max(4, min(h, w) // 12)
+    corners = [arr[:ps, :ps], arr[:ps, -ps:], arr[-ps:, :ps], arr[-ps:, -ps:]]
+    meds = np.array([np.median(c.reshape(-1, 3), axis=0) for c in corners])
+    labs = srgb_to_lab(meds)
+    mx = max(
+        float(np.linalg.norm(labs[i] - labs[j]))
+        for i in range(4) for j in range(i + 1, 4)
+    )
+    return np.median(meds, axis=0) if mx < 15.0 else None
+
+
+def foreground_mask(image: Image.Image, width: int = 540):
+    """マーカー用: 表示画像(RGB)と前景マスク(1D bool)を返す.
+
+    透過は不透明部分、非透過は四隅一致の背景色を除外した領域を前景とする。
     """
-    rgb = flatten_on_white(image)
+    has_alpha = _has_alpha(image)
+    disp = flatten_on_white(image)
+    w, h = disp.size
+    if w > width:
+        disp = disp.resize((width, max(1, int(h * width / w))), Image.BILINEAR)
+    arr = np.asarray(disp, dtype=np.float64)
+    flat = arr.reshape(-1, 3)
 
-    # アスペクト比を保ったまま、総ピクセル数が max_pixels 以下になるよう縮小
-    w, h = rgb.size
+    if has_alpha:
+        a = image.convert("RGBA").split()[-1].resize(disp.size, Image.BILINEAR)
+        mask = np.asarray(a).reshape(-1) >= 128
+    else:
+        mask = np.ones(len(flat), dtype=bool)
+        bg = _detect_corner_bg(arr)
+        if bg is not None:
+            d = np.linalg.norm(srgb_to_lab(flat) - srgb_to_lab(bg[None, :]), axis=1)
+            cand = d >= _BG_TOL
+            if cand.sum() >= 50:
+                mask = cand
+    return disp, mask
+
+
+def load_pixels(
+    image: Image.Image, max_pixels: int = 100_000, drop_background: bool = True
+) -> np.ndarray:
+    """PIL 画像を (N, 3) の RGB ピクセル配列に変換する（背景は除外）.
+
+    - 透過画像は不透明部分のみを使う（透明部分＝背景は除外）。
+    - 非透過画像は四隅が一致すればその色を背景とみなして除外する。
+    速度のため max_pixels を超える場合は縮小する。
+    """
+    has_alpha = _has_alpha(image)
+    img = image.convert("RGBA") if has_alpha else flatten_on_white(image)
+
+    w, h = img.size
     n = w * h
     if max_pixels and n > max_pixels:
         scale = (max_pixels / n) ** 0.5
-        new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
-        rgb = rgb.resize(new_size, Image.BILINEAR)
+        img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.BILINEAR)
 
-    arr = np.asarray(rgb, dtype=np.float64).reshape(-1, 3)
-    return arr
+    arr = np.asarray(img, dtype=np.float64)
+    if has_alpha:
+        rgb = arr[..., :3].reshape(-1, 3)
+        keep = arr[..., 3].reshape(-1) >= 128
+    else:
+        rgb = arr.reshape(-1, 3)
+        keep = np.ones(len(rgb), dtype=bool)
+        if drop_background:
+            bg = _detect_corner_bg(arr)
+            if bg is not None:
+                d = np.linalg.norm(srgb_to_lab(rgb) - srgb_to_lab(bg[None, :]), axis=1)
+                cand = d >= _BG_TOL
+                if cand.sum() >= 50:  # 主体が残る場合のみ背景を除外
+                    keep = cand
+
+    out = rgb[keep]
+    return out if len(out) else rgb
 
 
 def _to_rgb_tuple(arr) -> tuple[int, int, int]:
