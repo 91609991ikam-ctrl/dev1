@@ -88,9 +88,9 @@ def _name_indices(rgb: np.ndarray, naming: str, accent_mode: str = DEFAULT_ACCEN
 
 # クラスタリングの再現性を保つための既定シード
 DEFAULT_SEED = 42
-# 「アクセントカラー」とみなす割合の既定範囲（0〜10%）
+# 「アクセントカラー」とみなす割合の既定範囲（0〜5%）
 DEFAULT_ACCENT_LOW = 0.00
-DEFAULT_ACCENT_HIGH = 0.10
+DEFAULT_ACCENT_HIGH = 0.05
 # 探索するクラスタ数の既定範囲
 DEFAULT_K_MIN = 2
 DEFAULT_K_MAX = 16

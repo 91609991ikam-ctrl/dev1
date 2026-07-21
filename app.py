@@ -363,7 +363,7 @@ def main() -> None:
             max_value=50.0,
             value=(DEFAULT_ACCENT_LOW * 100, DEFAULT_ACCENT_HIGH * 100),
             step=0.5,
-            help="この割合の範囲に入る色を『アクセントカラー』とみなします（既定 5〜10%）。",
+            help="この割合の範囲に入る色を『アクセントカラー』とみなします（既定 0〜5%）。",
         )
         accent_low = accent_range[0] / 100.0
         accent_high = accent_range[1] / 100.0
