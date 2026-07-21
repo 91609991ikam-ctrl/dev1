@@ -397,8 +397,8 @@ def main() -> None:
             "クラスタ数 (k)",
             min_value=2,
             max_value=64,
-            value=DEFAULT_K_MAX,
-            help="このクラスタ数（固定）でパレットとアクセントを判定します（既定 16）。",
+            value=32,
+            help="このクラスタ数（固定）でパレットとアクセントを判定します（既定 32）。",
         )
 
         st.subheader("詳細設定")

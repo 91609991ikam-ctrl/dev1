@@ -143,14 +143,22 @@ def _achromatic_by_lightness(L: np.ndarray) -> np.ndarray:
 
 
 def _knn_vote(lab: np.ndarray, ref_lab: np.ndarray, ref_term: np.ndarray, kk: int) -> np.ndarray:
+    """距離重み付き k 近傍投票（近い点ほど強く効く）.
+
+    単純多数決だとデータの多いクラス（緑など）に偏るため、近傍を距離の逆数で
+    重み付けして票を集計する。入力 lab (N,3) -> 出力 (N,).
+    """
     kk = min(kk, ref_lab.shape[0])
-    dist = np.linalg.norm(lab[:, None, :] - ref_lab[None, :, :], axis=2)
-    idx = np.argpartition(dist, kk - 1, axis=1)[:, :kk]
-    neigh = ref_term[idx]
+    dist = np.linalg.norm(lab[:, None, :] - ref_lab[None, :, :], axis=2)  # (N, M)
+    idx = np.argpartition(dist, kk - 1, axis=1)[:, :kk]  # (N, kk)
+    n_terms = int(ref_term.max()) + 1
     out = np.empty(len(lab), dtype=int)
     for i in range(len(lab)):
-        vals, cnts = np.unique(neigh[i], return_counts=True)
-        out[i] = int(vals[int(cnts.argmax())])
+        nb = idx[i]
+        w = 1.0 / (dist[i, nb] + 1e-6)
+        score = np.zeros(n_terms)
+        np.add.at(score, ref_term[nb], w)
+        out[i] = int(np.argmax(score))
     return out
 
 
