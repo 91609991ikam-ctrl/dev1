@@ -16,18 +16,13 @@ K-means クラスタリングで抽出し、CIELAB ΔE で基本色名（赤・�
 from __future__ import annotations
 
 import io
-import math
 
-import numpy as np
 import streamlit as st
-from PIL import Image, ImageDraw
-
-from color_naming import srgb_to_lab
+from PIL import Image
 
 from color_palette import (
     DEFAULT_ACCENT_HIGH,
     DEFAULT_ACCENT_LOW,
-    DEFAULT_K_MAX,
     DEFAULT_SEED,
     ACCENT_ABSOLUTE,
     ACCENT_NORMALIZE,
@@ -36,7 +31,6 @@ from color_palette import (
     NAMING_KNN,
     Palette,
     cluster_and_quantize,
-    foreground_mask,
     load_pixels,
     make_palette,
 )
@@ -119,76 +113,6 @@ def render_palette(palette: Palette) -> None:
         st.markdown(html, unsafe_allow_html=True)
 
 
-def build_marked_image(image: Image.Image, colors: list, width: int = 540) -> Image.Image:
-    """入力画像の上に、各パレット色の代表位置へ色ピンを打った画像を返す.
-
-    背景（透過・四隅一致の背景色）は除外し、前景画素だけを最近傍パレット色に割り当て、
-    その重心付近の実画素にピンを置く。ピンどうしは重ならないよう軽く反発させて広げる。
-    colors: (rgb, 割合) のリスト。
-    """
-    disp, mask = foreground_mask(image, width)
-    W, H = disp.size
-    arr = np.asarray(disp, dtype=np.float64).reshape(-1, 3)
-    fg = np.where(mask)[0]
-    if len(fg) == 0 or not colors:
-        return disp
-    plab = srgb_to_lab(np.array([c[0] for c in colors], dtype=np.float64))
-    pix = srgb_to_lab(arr[fg])
-    assign = np.argmin(np.linalg.norm(pix[:, None, :] - plab[None, :, :], axis=2), axis=1)
-    ys, xs = np.divmod(fg, W)
-
-    # 各色の初期ピン位置（前景重心に最も近い同色画素）
-    pts: list = []
-    for i in range(len(colors)):
-        sel = assign == i
-        if not sel.any():
-            pts.append(None)
-            continue
-        si = np.where(sel)[0]
-        cx, cy = xs[si].mean(), ys[si].mean()
-        j = si[np.argmin((xs[si] - cx) ** 2 + (ys[si] - cy) ** 2)]
-        pts.append([float(xs[j]), float(ys[j])])
-
-    # 重なり回避: 近すぎるピンを反発させて広げる
-    r = 13
-    mind = 2.15 * r
-    active = [p for p in pts if p is not None]
-    for _ in range(120):
-        moved = False
-        for a in range(len(active)):
-            for b in range(a + 1, len(active)):
-                dx = active[a][0] - active[b][0]
-                dy = active[a][1] - active[b][1]
-                dist = math.hypot(dx, dy)
-                if dist < 1e-6:
-                    active[a][0] += r
-                    moved = True
-                elif dist < mind:
-                    push = (mind - dist) / 2.0
-                    ux, uy = dx / dist, dy / dist
-                    active[a][0] += ux * push
-                    active[a][1] += uy * push
-                    active[b][0] -= ux * push
-                    active[b][1] -= uy * push
-                    moved = True
-        for p in active:
-            p[0] = min(max(p[0], r + 2), W - r - 2)
-            p[1] = min(max(p[1], r + 2), H - r - 2)
-        if not moved:
-            break
-
-    draw = ImageDraw.Draw(disp, "RGBA")
-    for i, p in enumerate(pts):
-        if p is None:
-            continue
-        x, y = int(p[0]), int(p[1])
-        rgb = tuple(int(v) for v in colors[i][0])
-        draw.ellipse([x - r - 3, y - r - 3, x + r + 3, y + r + 3], outline=(0, 0, 0, 90), width=1)
-        draw.ellipse([x - r, y - r, x + r, y + r], fill=rgb + (255,),
-                     outline=(255, 255, 255, 255), width=3)
-    return disp
-
-
 def swatch_bands_html(colors: list) -> str:
     """Adobe 風の縦積みカラーバンド（HEX 付き）の HTML を返す."""
     rows = ""
@@ -249,7 +173,6 @@ def segment_image(
 @st.cache_data(show_spinner=False)
 def analyze_image(
     file_bytes: bytes,
-    orig_bytes: bytes,
     max_pixels: int,
     k: int,
     accent_low: float,
@@ -264,10 +187,11 @@ def analyze_image(
     accent_mode: str,
     min_prop: float,
     exclude_background: bool,
+    area_gamma: float,
 ) -> dict:
     """1 枚の画像を、固定クラスタ数 k で解析して結果を返す（キャッシュ対象）.
 
-    file_bytes: 分析入力（領域分割後の代表色マップ等）。orig_bytes: 元画像（ピン用）。
+    file_bytes: 分析入力（領域分割後の代表色マップ等）。
     """
     image = Image.open(io.BytesIO(file_bytes))
     pixels = load_pixels(image, max_pixels=max_pixels)
@@ -276,7 +200,7 @@ def analyze_image(
     agg_palette = make_palette(
         pixels, k, accent_low, accent_high, seed, aggregate,
         exclude_achromatic, lab_space, contrast_min, naming, accent_mode,
-        min_prop, exclude_background,
+        min_prop, exclude_background, area_gamma,
     )
     accent_names = {c.name for c in agg_palette.accent_colors}
     clustered = cluster_and_quantize(
@@ -290,6 +214,7 @@ def analyze_image(
         naming=naming,
         accent_mode=accent_mode,
         min_prop=min_prop,
+        area_gamma=area_gamma,
     )
     # 集約カラー（全色: 名前・hex・rgb・割合・アクセント可否）
     agg_colors = [
@@ -310,11 +235,6 @@ def analyze_image(
         palette_colors = [agg_colors[0]]
     palette_colors = palette_colors[:10]
 
-    # 元画像の上に色ピン（背景は除外・重なり回避）
-    orig = Image.open(io.BytesIO(orig_bytes))
-    marker_colors = [(tuple(c["rgb"]), c["percent"]) for c in palette_colors]
-    marked = build_marked_image(orig, marker_colors) if marker_colors else orig
-
     return {
         "k": k,
         "no_accent": not agg_palette.has_accent,
@@ -323,7 +243,6 @@ def analyze_image(
         "accents": agg_palette.accent_colors,
         "agg_colors": agg_colors,
         "palette_colors": palette_colors,
-        "marked": marked,
     }
 
 
@@ -355,13 +274,12 @@ def render_result(
     else:
         st.success(f"✅ k = {res['k']} でアクセントカラーが見つかりました。")
 
-    # 最終カラーパレット（色数は自動決定・役割のある色のみ）: 画像＋色ピン ＋ 縦バンド
+    # 最終カラーパレット（色数は自動決定・役割のある色のみ）: 縦バンド
     top = res["palette_colors"]
     if top:
         st.subheader(f"🎨 最終カラーパレット（{len(top)}色・自動）")
-        c_img, c_sw = st.columns([1, 1])
-        c_img.image(res["marked"], use_container_width=True, caption="色ピン＝各色の代表位置")
-        c_sw.markdown(
+        sw_col, _ = st.columns([1, 1])
+        sw_col.markdown(
             swatch_bands_html([(tuple(c["rgb"]), c["percent"]) for c in top]),
             unsafe_allow_html=True,
         )
@@ -487,6 +405,23 @@ def main() -> None:
             "（表示のみ。割合/アクセント判定は medoid のまま）。",
         )
         chroma_gamma = 2.0 if tip_weight else 0.0
+
+        rescue_small = st.toggle(
+            "小さな鮮やかな色を拾う（面積重みを弱める）",
+            value=True,
+            help="ON: 学習時に相異なる色を重視し、画素数の少ない色が大きな色に呑まれて"
+            "消えるのを防ぎます（割合は全画素から数え直すので水増しなし）。"
+            "小さな領域の目立つ色が消えるときに有効。",
+        )
+        rescue_strength = st.slider(
+            "拾う強さ",
+            min_value=0.0, max_value=1.0, value=0.5, step=0.1,
+            disabled=not rescue_small,
+            help="大きいほど面積を無視して相異なる色を等価に扱います"
+            "（1.0=面積を完全無視、0.0=ほぼ従来）。強すぎるとノイズ色が増えます。",
+        )
+        # area_gamma: 1.0=従来の面積重み、0.0=相異なる色を等価。強さ s→ 1-s。
+        area_gamma = (1.0 - rescue_strength) if rescue_small else 1.0
 
         st.subheader("色名の判定")
         naming_knn = st.toggle(
@@ -624,7 +559,6 @@ def main() -> None:
 
                 res = analyze_image(
                     analysis_bytes,
-                    data,
                     int(max_pixels),
                     int(k),
                     accent_low,
@@ -639,6 +573,7 @@ def main() -> None:
                     accent_mode,
                     float(min_prop),
                     exclude_background,
+                    float(area_gamma),
                 )
         except Exception as e:  # noqa: BLE001 - 1 件失敗しても残りは続行
             st.error(f"{file.name} の処理に失敗しました: {e}")

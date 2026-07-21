@@ -172,33 +172,6 @@ def _detect_corner_bg(arr: np.ndarray) -> np.ndarray | None:
     return np.median(meds, axis=0) if mx < 15.0 else None
 
 
-def foreground_mask(image: Image.Image, width: int = 540):
-    """マーカー用: 表示画像(RGB)と前景マスク(1D bool)を返す.
-
-    透過は不透明部分、非透過は四隅一致の背景色を除外した領域を前景とする。
-    """
-    has_alpha = _has_alpha(image)
-    disp = flatten_on_white(image)
-    w, h = disp.size
-    if w > width:
-        disp = disp.resize((width, max(1, int(h * width / w))), Image.BILINEAR)
-    arr = np.asarray(disp, dtype=np.float64)
-    flat = arr.reshape(-1, 3)
-
-    if has_alpha:
-        a = image.convert("RGBA").split()[-1].resize(disp.size, Image.BILINEAR)
-        mask = np.asarray(a).reshape(-1) >= 128
-    else:
-        mask = np.ones(len(flat), dtype=bool)
-        bg = _detect_corner_bg(arr)
-        if bg is not None:
-            d = np.linalg.norm(srgb_to_lab(flat) - srgb_to_lab(bg[None, :]), axis=1)
-            cand = d >= _BG_TOL
-            if cand.sum() >= 50:
-                mask = cand
-    return disp, mask
-
-
 def load_pixels(
     image: Image.Image, max_pixels: int = 100_000, drop_background: bool = True
 ) -> np.ndarray:
@@ -297,6 +270,7 @@ def make_palette(
     accent_mode: str = DEFAULT_ACCENT_MODE,
     min_prop: float = 0.0,
     exclude_background: bool = False,
+    area_gamma: float = 1.0,
 ) -> Palette:
     """ピクセル配列を k クラスタにクラスタリングしてパレットを作る.
 
@@ -314,7 +288,9 @@ def make_palette(
     """
     k = max(1, min(k, len(pixels)))
 
-    km = KMedoidsLite(n_clusters=k, random_state=seed, lab_space=lab_space)
+    km = KMedoidsLite(
+        n_clusters=k, random_state=seed, lab_space=lab_space, area_gamma=area_gamma
+    )
     labels = km.fit_predict(pixels)
     centers = km.cluster_centers_
 
@@ -442,6 +418,7 @@ def cluster_and_quantize(
     naming: str = DEFAULT_NAMING,
     accent_mode: str = DEFAULT_ACCENT_MODE,
     min_prop: float = 0.0,
+    area_gamma: float = 1.0,
 ) -> ClusteredImage:
     """k クラスタでクラスタリングし、「量子化画像」と「生の k 色パレット」を返す.
 
@@ -456,7 +433,8 @@ def cluster_and_quantize(
     k = max(1, min(k, len(fit_pixels)))
 
     km = KMedoidsLite(
-        n_clusters=k, random_state=seed, lab_space=lab_space, chroma_gamma=chroma_gamma
+        n_clusters=k, random_state=seed, lab_space=lab_space,
+        chroma_gamma=chroma_gamma, area_gamma=area_gamma,
     )
     km.fit(fit_pixels)
     centers = km.cluster_centers_

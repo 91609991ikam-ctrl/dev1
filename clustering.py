@@ -34,6 +34,11 @@ class KMedoidsLite:
         鮮やかな色（軸から遠い先端）が自前のクラスタに分離されやすくなる（割合は正直）。
       - chroma_gamma (γ): 各画素を彩度 C^γ で重み付けし、medoid 更新を重み付きにする。
         代表色が分布の先端（高彩度）へ寄る＝見た目が鮮やかになる（割合は水増しに注意）。
+      - area_gamma: 学習時の「面積重み」を count^area_gamma に圧縮する（1.0=従来の
+        面積重み、0.0=相異なる色を等価に扱う）。小さな領域の目立つ色が、画素数の多い
+        色に呑まれて medoid を得られず消えるのを防ぐ。1.0 未満のとき、相異なる色
+        （量子化した色）を count^area_gamma で重み付け標本化し、PAM コストも同じ重みに
+        する。割合は predict で全画素から数え直すため水増しにはならない。
     """
 
     def __init__(
@@ -45,6 +50,7 @@ class KMedoidsLite:
         lab_space: bool = True,
         ab_scale: float = 1.0,
         chroma_gamma: float = 0.0,
+        area_gamma: float = 1.0,
     ):
         self.n_clusters = n_clusters
         self.random_state = random_state
@@ -53,6 +59,7 @@ class KMedoidsLite:
         self.lab_space = lab_space
         self.ab_scale = ab_scale
         self.chroma_gamma = chroma_gamma
+        self.area_gamma = area_gamma
         self.cluster_centers_: np.ndarray | None = None
         self.labels_: np.ndarray | None = None
         self._medoid_feat: np.ndarray | None = None  # predict 用の medoid 特徴量
@@ -92,6 +99,32 @@ class KMedoidsLite:
             closest = np.minimum(closest, dist[nxt])
         return np.array(chosen, dtype=int)
 
+    def _distinct_sample(
+        self, X: np.ndarray, rng: np.random.Generator
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """相異なる色を count^area_gamma で重み付け標本化する（小さな色の救済）.
+
+        近い色を 8 段階に量子化してユニーク色にまとめ、その出現数 count を
+        area_gamma 乗した重みで標本を選ぶ。面積の大きい色ほど重みを圧縮するので、
+        画素数の少ない鮮やかな色も標本に残り、自前の medoid を得やすくなる。
+        戻り値: (代表色 RGB, PAM コスト用の重み)。
+        """
+        bin_ = 8
+        q = np.floor(np.clip(X, 0, 255) / bin_).astype(np.int64)
+        _, inv, cnt = np.unique(q, axis=0, return_inverse=True, return_counts=True)
+        nuniq = len(cnt)
+        # 各ユニーク色の代表＝そのビン内の平均色（幅 8 なので実色にごく近い）
+        reps = np.zeros((nuniq, 3), dtype=np.float64)
+        np.add.at(reps, inv, X)
+        reps /= cnt[:, None]
+        w = np.power(cnt.astype(np.float64), self.area_gamma)
+        m = min(self.sample_size, nuniq)
+        if m >= nuniq:
+            sel = np.arange(nuniq)
+        else:
+            sel = rng.choice(nuniq, size=m, replace=False, p=w / w.sum())
+        return reps[sel], w[sel]
+
     def fit(self, X: np.ndarray) -> "KMedoidsLite":
         X = np.asarray(X, dtype=np.float64)
         n = len(X)
@@ -99,9 +132,15 @@ class KMedoidsLite:
         rng = np.random.default_rng(self.random_state)
 
         # 部分標本を取り出して距離行列を作る
-        m = min(self.sample_size, n)
-        idx = np.arange(n) if m >= n else rng.choice(n, size=m, replace=False)
-        sample_rgb = X[idx]
+        sample_w = None
+        if self.area_gamma >= 1.0:
+            # 従来: 一様ランダム部分標本（面積重み＝画素数そのまま）
+            m = min(self.sample_size, n)
+            idx = np.arange(n) if m >= n else rng.choice(n, size=m, replace=False)
+            sample_rgb = X[idx]
+        else:
+            # 小さな色の救済: 相異なる色を count^area_gamma で重み付け標本化
+            sample_rgb, sample_w = self._distinct_sample(X, rng)
         sample_feat = self._features(sample_rgb)
         dist = self._pairwise(sample_feat)
 
@@ -110,6 +149,9 @@ class KMedoidsLite:
         if self.chroma_gamma > 0:
             chroma = _lab_chroma(srgb_to_lab(sample_rgb))
             weights = np.power(chroma, self.chroma_gamma)
+        # 面積重み（圧縮済み）を掛け合わせて PAM コストに反映（小さな色が medoid を得やすく）
+        if sample_w is not None:
+            weights = sample_w if weights is None else weights * sample_w
 
         # 初期 medoid → 交互最適化（割当 → 各クラスタの medoid 更新）
         medoids = self._kpp_init(dist, k, rng)
