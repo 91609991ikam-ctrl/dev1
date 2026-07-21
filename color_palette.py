@@ -299,14 +299,10 @@ def make_palette(
                 continue
             prop = float(group_count / total) if total else 0.0
 
-            # グループの割合加重平均色（合成色になりうる）
-            weights = counts[member_clusters].astype(np.float64)
-            avg = np.average(centers[member_clusters], axis=0, weights=weights)
-
-            # 平均色に最も近い「実在画素」をグループ内から選んでスウィッチにする
+            # グループの代表色は所属画素の「中央値」（縁の混色など外れ値に頑健）
             member_mask = np.isin(labels, member_clusters)
             member_pixels = pixels[member_mask]
-            swatch = nearest_real_pixel(avg, member_pixels)
+            swatch = np.median(member_pixels, axis=0)
 
             entries.append(_entry(prop, _to_rgb_tuple(swatch), BASIC_NAMES_JA[b_idx]))
 

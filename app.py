@@ -16,9 +16,10 @@ K-means クラスタリングで抽出し、CIELAB ΔE で基本色名（赤・�
 from __future__ import annotations
 
 import io
+import math
 
 import streamlit as st
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFilter
 
 from color_palette import (
     DEFAULT_ACCENT_HIGH,
@@ -114,6 +115,65 @@ def render_palette(palette: Palette) -> None:
         st.markdown(html, unsafe_allow_html=True)
 
 
+def designer_palette_image(colors: list[tuple[tuple[int, int, int], float]]) -> Image.Image:
+    """絵の具パレット風の色見本画像を作る（文字なし）.
+
+    colors: (rgb, 割合) のリスト（割合の多い順）。割合が大きいほど絵の具の
+    ダブが大きく、上の弧に沿って配置する。木製パレット＋艶のある絵の具の見た目。
+    """
+    s = 3  # 高解像度で描いて縮小（アンチエイリアス）
+    W, H = 640 * s, 430 * s
+    base = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(base)
+
+    # パレット本体（クリーム色の楕円）
+    cx, cy, rx, ry = 320 * s, 240 * s, 296 * s, 178 * s
+    d.ellipse([cx - rx, cy - ry, cx + rx, cy + ry],
+              fill=(234, 224, 205, 255), outline=(198, 183, 156, 255), width=3 * s)
+    # 内側のやわらかい陰影（下側を少し暗く）
+    d.ellipse([cx - rx + 8 * s, cy - ry + 26 * s, cx + rx - 8 * s, cy + ry + 10 * s],
+              outline=(0, 0, 0, 14), width=10 * s)
+    # 親指穴
+    hx, hy, hrx, hry = 176 * s, 330 * s, 44 * s, 31 * s
+    d.ellipse([hx - hrx, hy - hry, hx + hrx, hy + hry],
+              fill=(214, 201, 176, 255), outline=(190, 175, 148, 255), width=2 * s)
+
+    # 各絵の具ダブの位置・大きさを決める（上側の弧に沿って、内側に収める）
+    n = len(colors)
+    acx, acy, aax, aay = 330 * s, 232 * s, 210 * s, 74 * s
+    maxp = max((p for _, p in colors), default=1.0) or 1.0
+    dabs = []
+    for i, (rgb, p) in enumerate(colors):
+        t = i / (n - 1) if n > 1 else 0.5
+        a = math.radians(200 + t * 140)
+        x = acx + aax * math.cos(a)
+        y = acy + aay * math.sin(a)
+        r = (30 + 24 * (p / maxp) ** 0.5) * s
+        dabs.append((x, y, r, tuple(int(v) for v in rgb)))
+
+    # 影（別レイヤーにまとめて軽くぼかす）
+    shadow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    sd = ImageDraw.Draw(shadow)
+    for x, y, r, _ in dabs:
+        sd.ellipse([x - r + 2 * s, y - r + 5 * s, x + r + 2 * s, y + r + 5 * s],
+                   fill=(45, 33, 22, 130))
+    base = Image.alpha_composite(base, shadow.filter(ImageFilter.GaussianBlur(4 * s)))
+    d = ImageDraw.Draw(base)
+
+    # 絵の具ダブ本体＋ハイライト
+    highlight = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    hd = ImageDraw.Draw(highlight)
+    for x, y, r, rgb in dabs:
+        d.ellipse([x - r, y - r, x + r, y + r], fill=rgb + (255,))
+        d.ellipse([x - r, y - r, x + r, y + r], outline=(0, 0, 0, 30), width=max(1, int(1.4 * s)))
+        hr = r * 0.42
+        hxx, hyy = x - r * 0.3, y - r * 0.34
+        hd.ellipse([hxx - hr, hyy - hr, hxx + hr, hyy + hr], fill=(255, 255, 255, 90))
+    base = Image.alpha_composite(base, highlight.filter(ImageFilter.GaussianBlur(2 * s)))
+
+    return base.resize((W // s, H // s), Image.LANCZOS)
+
+
 def palette_table(palette: Palette) -> list[dict]:
     """パレットを表形式のデータに変換."""
     rows = []
@@ -196,9 +256,15 @@ def analyze_image(
         accent_mode=accent_mode,
         min_prop=min_prop,
     )
-    # 集約カラー（全色: 名前・hex・割合・アクセント可否）
+    # 集約カラー（全色: 名前・hex・rgb・割合・アクセント可否）
     agg_colors = [
-        {"name": c.name, "hex": c.hex, "percent": round(c.percent, 2), "accent": c.is_accent}
+        {
+            "name": c.name,
+            "hex": c.hex,
+            "rgb": list(c.rgb),
+            "percent": round(c.percent, 2),
+            "accent": c.is_accent,
+        }
         for c in agg_palette.colors
     ]
     return {
@@ -239,8 +305,15 @@ def render_result(
     else:
         st.success(f"✅ k = {res['k']} でアクセントカラーが見つかりました。")
 
+    # 最終カラーパレット（絵の具パレット風・集約色の中央値・文字なし・最大10色）
+    dp_colors = [(tuple(c["rgb"]), c["percent"] / 100.0) for c in res["agg_colors"][:10]]
+    if dp_colors:
+        st.subheader("🎨 最終カラーパレット")
+        p_col, _ = st.columns([3, 2])
+        p_col.image(designer_palette_image(dp_colors), use_container_width=True)
+
     final = res["palette"]
-    st.subheader(f"🎨 カラーパレット（k = {res['k']}・{len(final.colors)}色）")
+    st.subheader(f"クラスタ別の内訳（k = {res['k']}・{len(final.colors)}色）")
     render_palette(final)
 
     accents = res["accents"]
