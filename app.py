@@ -18,8 +18,11 @@ from __future__ import annotations
 import io
 import math
 
+import numpy as np
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFilter
+
+from color_naming import flatten_on_white, srgb_to_lab
 
 from color_palette import (
     DEFAULT_ACCENT_HIGH,
@@ -113,6 +116,54 @@ def render_palette(palette: Palette) -> None:
     html = palette_html(palette)
     if html:
         st.markdown(html, unsafe_allow_html=True)
+
+
+def build_marked_image(image: Image.Image, colors: list, width: int = 540) -> Image.Image:
+    """画像上に、各パレット色の代表位置へ色ピン（マーカー）を打った画像を返す.
+
+    各画素を最も近いパレット色（Lab）に割り当て、その重心付近の実画素にピンを置く。
+    colors: (rgb, 割合) のリスト。
+    """
+    disp = flatten_on_white(image)
+    w, h = disp.size
+    if w > width:
+        disp = disp.resize((width, max(1, int(h * width / w))), Image.BILINEAR)
+    W, H = disp.size
+    arr = np.asarray(disp, dtype=np.float64).reshape(-1, 3)
+    plab = srgb_to_lab(np.array([c[0] for c in colors], dtype=np.float64))
+    pix = srgb_to_lab(arr)
+    assign = np.argmin(np.linalg.norm(pix[:, None, :] - plab[None, :, :], axis=2), axis=1)
+    ys, xs = np.divmod(np.arange(len(arr)), W)
+
+    draw = ImageDraw.Draw(disp, "RGBA")
+    r = 13
+    for i, (rgb, _p) in enumerate(colors):
+        mi = np.where(assign == i)[0]
+        if len(mi) == 0:
+            continue
+        cx, cy = xs[mi].mean(), ys[mi].mean()
+        j = mi[np.argmin((xs[mi] - cx) ** 2 + (ys[mi] - cy) ** 2)]  # 重心に最も近い同色画素
+        x, y = int(xs[j]), int(ys[j])
+        draw.ellipse([x - r - 3, y - r - 3, x + r + 3, y + r + 3], outline=(0, 0, 0, 90), width=1)
+        draw.ellipse([x - r, y - r, x + r, y + r], fill=tuple(int(v) for v in rgb) + (255,),
+                     outline=(255, 255, 255, 255), width=3)
+    return disp
+
+
+def swatch_bands_html(colors: list) -> str:
+    """Adobe 風の縦積みカラーバンド（HEX 付き）の HTML を返す."""
+    rows = ""
+    for rgb, pct in colors:
+        r, g, b = (int(v) for v in rgb)
+        hexv = f"#{r:02X}{g:02X}{b:02X}"
+        fg = "#000000" if (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.6 else "#FFFFFF"
+        rows += (
+            f'<div style="background:{hexv};color:{fg};height:60px;display:flex;'
+            "align-items:center;justify-content:space-between;padding:0 16px;"
+            'font-family:monospace;font-size:0.95rem;">'
+            f"<span>{hexv}</span><span style='opacity:.75'>{pct:.1f}%</span></div>"
+        )
+    return f'<div style="border-radius:10px;overflow:hidden;border:1px solid #ddd;">{rows}</div>'
 
 
 def designer_palette_image(colors: list[tuple[tuple[int, int, int], float]]) -> Image.Image:
@@ -267,6 +318,10 @@ def analyze_image(
         }
         for c in agg_palette.colors
     ]
+    # 画像上の色ピン（各パレット色の代表位置）
+    marker_colors = [(tuple(c["rgb"]), c["percent"]) for c in agg_colors[:10]]
+    marked = build_marked_image(image, marker_colors) if marker_colors else image
+
     return {
         "k": k,
         "no_accent": not agg_palette.has_accent,
@@ -274,6 +329,7 @@ def analyze_image(
         "quant": clustered.image,
         "accents": agg_palette.accent_colors,
         "agg_colors": agg_colors,
+        "marked": marked,
     }
 
 
@@ -305,12 +361,21 @@ def render_result(
     else:
         st.success(f"✅ k = {res['k']} でアクセントカラーが見つかりました。")
 
-    # 最終カラーパレット（絵の具パレット風・集約色の中央値・文字なし・最大10色）
-    dp_colors = [(tuple(c["rgb"]), c["percent"] / 100.0) for c in res["agg_colors"][:10]]
-    if dp_colors:
-        st.subheader("🎨 最終カラーパレット")
-        p_col, _ = st.columns([3, 2])
-        p_col.image(designer_palette_image(dp_colors), use_container_width=True)
+    # 最終カラーパレット（色数は自動決定）: 画像＋色ピン ＋ 縦バンド（HEX）
+    top = res["agg_colors"][:10]
+    if top:
+        st.subheader(f"🎨 最終カラーパレット（{len(top)}色・自動）")
+        c_img, c_sw = st.columns([1, 1])
+        c_img.image(res["marked"], use_container_width=True, caption="色ピン＝各色の代表位置")
+        c_sw.markdown(
+            swatch_bands_html([(tuple(c["rgb"]), c["percent"]) for c in top]),
+            unsafe_allow_html=True,
+        )
+        with st.expander("🎨 絵の具パレット風で見る（文字なし）"):
+            st.image(
+                designer_palette_image([(tuple(c["rgb"]), c["percent"] / 100.0) for c in top]),
+                use_container_width=True,
+            )
 
     final = res["palette"]
     st.subheader(f"クラスタ別の内訳（k = {res['k']}・{len(final.colors)}色）")
