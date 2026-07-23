@@ -72,6 +72,13 @@ _DEDUP_RATIO = 2.0  # 相手がこの倍以上大きいとき外す
 # 小さな鮮やかな色をノイズ併合から守る（＝小さくてもアクセント候補として残す）閾値
 _VIVID_CHROMA = 45.0  # この彩度 C* 以上なら「鮮やか」
 _VIVID_ISO_DE = 35.0  # 他の全色から Lab でこの ΔE 以上離れていれば「孤立」
+# 影の畳み込み（同色相で暗いだけの色を基の色へ併合）の定数
+_SHADOW_L_GAP = 8.0    # 基よりこれ以上暗い（L* 差）ときに影候補
+_SHADOW_L_MAX = 45.0   # L* 差がこれを超えると別色とみなし畳み込まない（黒縁・濃色を保護）
+_SHADOW_COS = 0.87     # a*b* 方向（色相）の一致度 cos。約 30°までのズレを許容
+_SHADOW_NEUTRAL_MAG = 4.0  # a*b* の大きさがこれ未満なら「ほぼ無彩色」
+_SHADOW_C_RATIO = 1.15  # 影の彩度は基の C* × これ + 加算値 まで（影は彩度が増えない）
+_SHADOW_C_ADD = 3.0
 
 
 def _name_indices_lab(lab: np.ndarray, naming: str) -> np.ndarray:
@@ -278,6 +285,71 @@ def _merge_small(
     return keep_idx, remap
 
 
+def _fold_shadows(centers: np.ndarray, counts: np.ndarray):
+    """影（同色相で暗いだけの色）を、明るい方の大きな色へ畳み込む.
+
+    イラストの陰影は多くの場合「同じ色相のまま L* が下がった（彩度も落ちた）」色で、
+    別クラスタ・別色名として不要に増える。次を満たす小クラスタ c を基クラスタ t へ
+    畳み込む（c の画素は t の割合へ合算するので割合は正直）:
+      - t の方が画素数が多い（＝基の色）
+      - c が t より _SHADOW_L_GAP〜_SHADOW_L_MAX だけ暗い（暗すぎる別色は畳まない）
+      - c の彩度が t を超えて増えていない（鮮やかなアクセントを基へ吸わせない）
+      - a*b* 方向（色相）が一致（cos ≥ _SHADOW_COS）、または両方ほぼ無彩色
+
+    戻り値は _merge_small と同じ (keep_idx, remap)。
+    """
+    counts = np.asarray(counts, dtype=np.float64)
+    n = len(centers)
+    if n <= 1:
+        return np.arange(n), np.arange(n)
+
+    lab = srgb_to_lab(np.asarray(centers, dtype=np.float64))
+    L = lab[:, 0]
+    ab = lab[:, 1:]
+    chroma = _lab_chroma(lab)
+    mag = np.linalg.norm(ab, axis=1)
+
+    root = np.arange(n)
+
+    def find(x: int) -> int:
+        while root[x] != x:
+            root[x] = root[root[x]]
+            x = root[x]
+        return x
+
+    def _same_hue(c: int, t: int) -> bool:
+        nc, nt = mag[c], mag[t]
+        if nc >= _SHADOW_NEUTRAL_MAG and nt >= _SHADOW_NEUTRAL_MAG:
+            return float(ab[c] @ ab[t]) / (nc * nt) >= _SHADOW_COS
+        return nc < _SHADOW_NEUTRAL_MAG and nt < _SHADOW_NEUTRAL_MAG
+
+    # 暗い色から順に、基となる（明るく大きい同色相の）色へ畳み込む
+    for c in np.argsort(L):
+        c = int(c)
+        best, best_d = -1, np.inf
+        for t in range(n):
+            if t == c or counts[t] <= counts[c]:
+                continue
+            dL = L[t] - L[c]
+            if dL < _SHADOW_L_GAP or dL > _SHADOW_L_MAX:
+                continue
+            if chroma[c] > chroma[t] * _SHADOW_C_RATIO + _SHADOW_C_ADD:
+                continue
+            if not _same_hue(c, t):
+                continue
+            d = float(np.linalg.norm(ab[c] - ab[t]))
+            if d < best_d:
+                best_d, best = d, t
+        if best >= 0:
+            root[find(c)] = find(best)
+
+    final = np.array([find(i) for i in range(n)], dtype=int)
+    keep_idx = np.array(sorted(set(final.tolist())))
+    pos = {g: i for i, g in enumerate(keep_idx)}
+    remap = np.array([pos[final[c]] for c in range(n)], dtype=int)
+    return keep_idx, remap
+
+
 def make_palette(
     pixels: np.ndarray,
     k: int,
@@ -293,6 +365,7 @@ def make_palette(
     min_prop: float = 0.0,
     exclude_background: bool = False,
     area_gamma: float = 1.0,
+    fold_shadows: bool = True,
 ) -> Palette:
     """ピクセル配列を k クラスタにクラスタリングしてパレットを作る.
 
@@ -317,6 +390,14 @@ def make_palette(
     centers = km.cluster_centers_
 
     counts = np.bincount(labels, minlength=k)
+
+    # 影（同色相で暗いだけの色）を基の色へ畳み込み、不要な影色を減らす
+    if fold_shadows and k > 1:
+        keep_idx, remap = _fold_shadows(centers, counts)
+        labels = remap[labels]
+        centers = centers[keep_idx]
+        k = len(keep_idx)
+        counts = np.bincount(labels, minlength=k)
 
     # 極小クラスタを近い色へ併合（min_prop 未満を吸収）。救済ON なら鮮やか孤立色は守る
     if min_prop > 0:
@@ -443,6 +524,7 @@ def cluster_and_quantize(
     accent_mode: str = DEFAULT_ACCENT_MODE,
     min_prop: float = 0.0,
     area_gamma: float = 1.0,
+    fold_shadows: bool = True,
 ) -> ClusteredImage:
     """k クラスタでクラスタリングし、「量子化画像」と「生の k 色パレット」を返す.
 
@@ -464,14 +546,23 @@ def cluster_and_quantize(
     centers = km.cluster_centers_
     counts = np.bincount(km.labels_, minlength=k)
 
-    # 極小クラスタを近い色へ併合（ノイズ色の除去）。救済ON なら鮮やか孤立色は守る
+    # remap: 元クラスタ index -> 現在の index（各後処理で合成していく）
     remap = np.arange(k)
+    # 影（同色相で暗いだけの色）を基の色へ畳み込む
+    if fold_shadows and k > 1:
+        keep_idx, rm = _fold_shadows(centers, counts)
+        centers = centers[keep_idx]
+        k = len(keep_idx)
+        remap = rm[remap]
+        counts = np.bincount(remap[km.labels_], minlength=k)
+    # 極小クラスタを近い色へ併合（ノイズ色の除去）。救済ON なら鮮やか孤立色は守る
     if min_prop > 0:
-        keep_idx, remap = _merge_small(
+        keep_idx, rm = _merge_small(
             centers, counts, min_prop, protect_vivid=area_gamma < 1.0
         )
         centers = centers[keep_idx]
         k = len(keep_idx)
+        remap = rm[remap]
         counts = np.bincount(remap[km.labels_], minlength=k)
 
     total = counts.sum()

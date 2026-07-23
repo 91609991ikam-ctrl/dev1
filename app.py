@@ -188,6 +188,7 @@ def analyze_image(
     min_prop: float,
     exclude_background: bool,
     area_gamma: float,
+    fold_shadows: bool,
 ) -> dict:
     """1 枚の画像を、固定クラスタ数 k で解析して結果を返す（キャッシュ対象）.
 
@@ -200,7 +201,7 @@ def analyze_image(
     agg_palette = make_palette(
         pixels, k, accent_low, accent_high, seed, aggregate,
         exclude_achromatic, lab_space, contrast_min, naming, accent_mode,
-        min_prop, exclude_background, area_gamma,
+        min_prop, exclude_background, area_gamma, fold_shadows,
     )
     accent_names = {c.name for c in agg_palette.accent_colors}
     clustered = cluster_and_quantize(
@@ -215,6 +216,7 @@ def analyze_image(
         accent_mode=accent_mode,
         min_prop=min_prop,
         area_gamma=area_gamma,
+        fold_shadows=fold_shadows,
     )
     # 集約カラー（全色: 名前・hex・rgb・割合・アクセント可否）
     agg_colors = [
@@ -423,6 +425,14 @@ def main() -> None:
         # area_gamma: 1.0=従来の面積重み、0.0=相異なる色を等価。強さ s→ 1-s。
         area_gamma = (1.0 - rescue_strength) if rescue_small else 1.0
 
+        fold_shadows = st.toggle(
+            "影を基の色に畳み込む",
+            value=True,
+            help="ON: 同じ色相のまま暗いだけの色（影）を、明るい元の色へ併合します。"
+            "影で不要な色が増えるのを防ぎます（割合は元の色へ合算・正直）。"
+            "色相の違う色や黒縁・濃色は畳み込みません。",
+        )
+
         st.subheader("色名の判定")
         naming_knn = st.toggle(
             "人間の色名データで判定（XKCD・推奨）",
@@ -574,6 +584,7 @@ def main() -> None:
                     float(min_prop),
                     exclude_background,
                     float(area_gamma),
+                    fold_shadows,
                 )
         except Exception as e:  # noqa: BLE001 - 1 件失敗しても残りは続行
             st.error(f"{file.name} の処理に失敗しました: {e}")
