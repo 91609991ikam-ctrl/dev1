@@ -69,6 +69,9 @@ _NORM_MAX = 4.0  # 引き伸ばし倍率の上限（ノイズ増幅抑制）
 # 重複除去（似た大きい色の近くのアクセントを外す）の定数
 _DEDUP_DE = 15.0  # この ΔE 未満なら「似た色」
 _DEDUP_RATIO = 2.0  # 相手がこの倍以上大きいとき外す
+# 小さな鮮やかな色をノイズ併合から守る（＝小さくてもアクセント候補として残す）閾値
+_VIVID_CHROMA = 45.0  # この彩度 C* 以上なら「鮮やか」
+_VIVID_ISO_DE = 35.0  # 他の全色から Lab でこの ΔE 以上離れていれば「孤立」
 
 
 def _name_indices_lab(lab: np.ndarray, naming: str) -> np.ndarray:
@@ -215,12 +218,18 @@ def _to_rgb_tuple(arr) -> tuple[int, int, int]:
     return (max(0, min(255, r)), max(0, min(255, g)), max(0, min(255, b)))
 
 
-def _merge_small(centers: np.ndarray, counts: np.ndarray, min_prop: float):
+def _merge_small(
+    centers: np.ndarray, counts: np.ndarray, min_prop: float, protect_vivid: bool = False
+):
     """割合が min_prop 未満の小クラスタを、凝集的に最も近い色へ併合する.
 
     最小の（フロア未満の）クラスタを最近傍（Lab）へ併合、を繰り返す。近い色どうしが
     先にまとまるので、複数サブクラスタに割れた小さな色（例: 花の赤）は互いに併合されて
     生き残り、バラバラなノイズだけが大きな色へ吸収される。
+
+    protect_vivid=True のとき、フロア未満でも「鮮やか（高彩度）かつ孤立（他の全色から
+    Lab で遠い）」な色は併合しない。小さくても目立つアクセント（額の宝石など）が
+    ノイズとして吸収されて消えるのを防ぐ。くすんだ色や近い色のノイズは従来通り吸収される。
 
     戻り値 (keep_idx, remap):
       keep_idx: 残すクラスタの元インデックス
@@ -233,13 +242,26 @@ def _merge_small(centers: np.ndarray, counts: np.ndarray, min_prop: float):
         return np.arange(n), np.arange(n)
 
     lab = srgb_to_lab(np.asarray(centers, dtype=np.float64))
+    chroma = _lab_chroma(lab)
     floor = min_prop * total
     grp = np.arange(n)  # 各元クラスタが属する現在のグループ根
     gcount = counts.copy()
     active = list(range(n))
 
+    def _protected(g: int, others: list[int]) -> bool:
+        # 鮮やかで、他の全グループから十分離れている（孤立）小色は守る。
+        # 近い色（同系の陰影など）が残っていれば孤立ではないので守らない
+        # （その場合はまず同士で併合されてから判定される）。
+        if not protect_vivid or chroma[g] < _VIVID_CHROMA or not others:
+            return False
+        dmin = min(float(np.linalg.norm(lab[g] - lab[o])) for o in others)
+        return dmin >= _VIVID_ISO_DE
+
     while len(active) > 1:
-        below = [g for g in active if gcount[g] < floor]
+        below = [
+            g for g in active
+            if gcount[g] < floor and not _protected(g, [o for o in active if o != g])
+        ]
         if not below:
             break
         g = min(below, key=lambda x: gcount[x])  # 最小のフロア未満グループ
@@ -296,9 +318,11 @@ def make_palette(
 
     counts = np.bincount(labels, minlength=k)
 
-    # 極小クラスタを近い色へ併合（min_prop 未満を吸収）
+    # 極小クラスタを近い色へ併合（min_prop 未満を吸収）。救済ON なら鮮やか孤立色は守る
     if min_prop > 0:
-        keep_idx, remap = _merge_small(centers, counts, min_prop)
+        keep_idx, remap = _merge_small(
+            centers, counts, min_prop, protect_vivid=area_gamma < 1.0
+        )
         labels = remap[labels]
         centers = centers[keep_idx]
         k = len(keep_idx)
@@ -440,10 +464,12 @@ def cluster_and_quantize(
     centers = km.cluster_centers_
     counts = np.bincount(km.labels_, minlength=k)
 
-    # 極小クラスタを近い色へ併合（ノイズ色の除去）
+    # 極小クラスタを近い色へ併合（ノイズ色の除去）。救済ON なら鮮やか孤立色は守る
     remap = np.arange(k)
     if min_prop > 0:
-        keep_idx, remap = _merge_small(centers, counts, min_prop)
+        keep_idx, remap = _merge_small(
+            centers, counts, min_prop, protect_vivid=area_gamma < 1.0
+        )
         centers = centers[keep_idx]
         k = len(keep_idx)
         counts = np.bincount(remap[km.labels_], minlength=k)
