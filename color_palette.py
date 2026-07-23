@@ -182,6 +182,27 @@ def _detect_corner_bg(arr: np.ndarray) -> np.ndarray | None:
     return np.median(meds, axis=0) if mx < 15.0 else None
 
 
+def _display_background_mask(image: Image.Image, disp: Image.Image) -> np.ndarray | None:
+    """表示画像 disp（RGB）上で「背景」とみなせる画素の 1D bool マスクを返す.
+
+    透過画像は不透明部分以外、非透過画像は四隅一致の背景色に近い画素を背景とする。
+    背景が見つからなければ None。load_pixels の除外条件と対応させ、減色画像で背景を
+    元の色のまま残す（前景色で塗りつぶさない）ために使う。
+    """
+    disp_arr = np.asarray(disp, dtype=np.float64)
+    flat = disp_arr.reshape(-1, 3)
+    if _has_alpha(image):
+        a = image.convert("RGBA").split()[-1].resize(disp.size, Image.BILINEAR)
+        return np.asarray(a).reshape(-1) < 128
+    bg = _detect_corner_bg(disp_arr)
+    if bg is None:
+        return None
+    d = np.linalg.norm(srgb_to_lab(flat) - srgb_to_lab(bg[None, :]), axis=1)
+    bg_mask = d < _BG_TOL
+    # 前景が十分残る場合のみ背景として扱う（画像全体が一様な場合は塗らない）
+    return bg_mask if (~bg_mask).sum() >= 50 else None
+
+
 def load_pixels(
     image: Image.Image, max_pixels: int = 100_000, drop_background: bool = True
 ) -> np.ndarray:
@@ -506,6 +527,27 @@ def make_palette(
                     e.is_accent = False
                     break
 
+    # 小さく鮮やかで孤立した有彩色の救済: コントラスト/重複除去などで誤って外れても、
+    # 「アクセント帯・有彩色・高彩度・自分より十分大きい色から Lab で孤立」なら拾い直す。
+    # 額の宝石のような明確なアクセントが、各ゲートのすり抜けで消えるのを防ぐ（救済ON時）。
+    if area_gamma < 1.0 and entries:
+        v_lab = srgb_to_lab(np.array([e.rgb for e in entries], dtype=np.float64))
+        v_chroma = _lab_chroma(v_lab)
+        v_props = np.array([e.proportion for e in entries])
+        for i, e in enumerate(entries):
+            if e.is_accent or not (accent_low <= e.proportion <= accent_high):
+                continue
+            if exclude_achromatic and e.name in NON_ACCENT_NAMES_JA:
+                continue
+            if v_chroma[i] < _VIVID_CHROMA:
+                continue
+            larger = v_props >= _DEDUP_RATIO * e.proportion
+            if larger.any():
+                dmin = float(np.linalg.norm(v_lab[larger] - v_lab[i], axis=1).min())
+                if dmin < _VIVID_ISO_DE:
+                    continue
+            e.is_accent = True
+
     # 割合の降順に並べ替え（多い順）
     entries.sort(key=lambda c: c.proportion, reverse=True)
     return Palette(k=k, colors=entries)
@@ -577,7 +619,13 @@ def cluster_and_quantize(
         disp = disp.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.BILINEAR)
     disp_arr = np.asarray(disp, dtype=np.float64).reshape(-1, 3)
     disp_labels = remap[km.predict(disp_arr)]
-    quant = centers[disp_labels].reshape(disp.height, disp.width, 3)
+    quant = centers[disp_labels]
+    # 背景は学習から除外している。表示でも背景画素を最寄り前景色で塗らず元のまま残す
+    # （白背景がクリーム等に化けて見える不具合を防ぐ）。
+    bg_mask = _display_background_mask(image, disp)
+    if bg_mask is not None:
+        quant[bg_mask] = disp_arr[bg_mask]
+    quant = quant.reshape(disp.height, disp.width, 3)
     quant_img = Image.fromarray(np.clip(np.round(quant), 0, 255).astype(np.uint8))
 
     # --- 生の k 色パレット（集約しない）---
